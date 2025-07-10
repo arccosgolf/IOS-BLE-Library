@@ -147,6 +147,10 @@ public class Peripheral {
 */
 //CG_END
 	}
+    
+    func cleanupQueueOnError() {
+        self.peripheralDelegate.cleanupQueueOnError()
+    }
 }
 
 // MARK: - API

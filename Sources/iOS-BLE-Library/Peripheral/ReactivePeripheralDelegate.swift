@@ -227,6 +227,12 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	) {
         modifyServicesSubject.send(invalidatedServices)
 	}
+    
+    func cleanupQueueOnError() {
+        Logger.shared.i("Dequueing services queue on error", category: "ReactivePeripheralDelegate")
+        discoveredServicesQueue.dequeue()
+        discoveredServicesQueue.runNext()
+    }
 
 	// MARK: Monitoring L2CAP Channels
 /*
