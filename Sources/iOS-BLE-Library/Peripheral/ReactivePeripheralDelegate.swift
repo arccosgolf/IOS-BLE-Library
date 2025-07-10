@@ -28,18 +28,17 @@ struct IdentifiableOperation {
 
 class SingleTaskQueue {
     private var queue = Queue<IdentifiableOperation>()
-    let l = L(category: "SingleTaskQueue")
     private let accessQueue = DispatchQueue(label: "com.ble-library.SingleTaskQueue")
     
     func addOperation(_ task: IdentifiableOperation) {
         accessQueue.sync {
-            l.i("add operation \(task.id)")
+            Logger.shared.i("add operation \(task.id)", category: "SingleTaskQueue")
             if queue.isEmpty {
-                l.i("queue is empty")
+                Logger.shared.i("queue is empty", category: "SingleTaskQueue")
                 queue.enqueue(task)
                 task.block()
             } else {
-                l.i("some tasks")
+                Logger.shared.i("some tasks", category: "SingleTaskQueue")
                 queue.enqueue(task)
             }
         }
@@ -50,21 +49,20 @@ class SingleTaskQueue {
         accessQueue.sync {
             task = queue.dequeue()
         }
-        l.i("dequeue: \(task?.id.uuidString ?? "no task")")
+        Logger.shared.i("dequeue: \(task?.id.uuidString ?? "no task")", category: "SingleTaskQueue")
         return task
     }
     
     func runNext() {
         accessQueue.sync {
             let task = queue.peek()
-            l.i("run next: \(task?.id.uuidString ?? "no task")")
+            Logger.shared.i("run next: \(task?.id.uuidString ?? "no task")", category: "SingleTaskQueue")
             task?.block()            
         }
     }
 }
 
 open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
-	let l = L(category: #file)
     
     typealias NonFailureSubject<T> = PassthroughSubject<T, Never>
     
@@ -235,7 +233,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	public func peripheral(
 		_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?
 	) {
-		l.i(#function)
+		Logger.shared.i(#function, category: "ReactivePeripheralDelegate")
 		fatalError()
 	}
 */

@@ -8,78 +8,37 @@
 import Foundation
 import os
 
-@available(iOS 14.0, macOS 11, watchOS 7.0, *)
-private struct Loggers {
-    static var loggers: [UUID : Logger] = [:]
+protocol NordicBluetoothLogger {
+    func i(_ msg : String)
+    func d(_ msg : String)
+    func f(_ msg : String)
+    func e(_ msg : String)
 }
 
-struct L {
-    @inline(__always)
-    static let enabled: Bool = false
+final class Logger {
+    static let shared = Logger()
     
-    let subsystem: String
-    let category: String
+    private var bluetoothLogger: NordicBluetoothLogger?
     
-    private let shouldLog: Bool
+    private init() {}
     
-    private let id = UUID()
-    
-    init(
-        subsystem: String = "com.nordicsemi.ios_ble_library", category: String,
-        enabled: Bool = Self.enabled
-    ) {
-        self.subsystem = subsystem
-        self.category = category
-        self.shouldLog = enabled
-        
-        if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[self.id] = Logger(subsystem: subsystem, category: category)
-        }
+    func configure(with logger: NordicBluetoothLogger) {
+        bluetoothLogger = logger
     }
     
-    func i(_ msg: String) {
-#if DEBUG
-        if !shouldLog { return }
-        
-        if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[id]?.info("\(msg)")
-        } else {
-            os_log("%@", type: .info, msg)
-        }
-        
-#endif
+    func i(_ msg: String, category: String) {
+        bluetoothLogger?.i("[\(category)] \(msg)")
     }
     
-    func d(_ msg: String) {
-#if DEBUG
-        if !shouldLog { return }
-        if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[id]?.debug("\(msg)")
-        } else {
-            os_log("%@", type: .debug, msg)
-        }
-#endif
+    func d(_ msg: String, category: String) {
+        bluetoothLogger?.d("[\(category)] \(msg)")
     }
     
-    func e(_ msg: String) {
-#if DEBUG
-        if !shouldLog { return }
-        if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[id]?.error("\(msg)")
-        } else {
-            os_log("%@", type: .error, msg)
-        }
-#endif
+    func e(_ msg: String, category: String) {
+        bluetoothLogger?.e("[\(category)] \(msg)")
     }
     
-    func f(_ msg: String) {
-#if DEBUG
-        if !shouldLog { return }
-        if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[id]?.fault("\(msg)")
-        } else {
-            os_log("%@", type: .fault, msg)
-        }
-#endif
+    func f(_ msg: String, category: String) {
+        bluetoothLogger?.f("[\(category)] \(msg)")
     }
 }

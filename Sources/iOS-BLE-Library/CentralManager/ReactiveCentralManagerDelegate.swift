@@ -25,9 +25,10 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	let stateSubject = CurrentValueSubject<CBManagerState, Never>(.unknown)
 	let scanResultSubject = PassthroughSubject<ScanResult, Never>()
 	let connectedPeripheralSubject = PassthroughSubject<(CBPeripheral, Error?), Never>()
-	let disconnectedPeripheralsSubject = PassthroughSubject<(CBPeripheral, Error?), Never>()
+	let disconnectedPeripheralsSubject = PassthroughSubject<(CBPeripheral, Bool, Error?), Never>()
 	let connectionEventSubject = PassthroughSubject<(CBPeripheral, CBConnectionEvent), Never>()
-
+    let restoredPeripheralsSubject = PassthroughSubject<[String: Any], Never>()
+    
 	// MARK: Monitoring Connections with Peripherals
 	open func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
 		connectedPeripheralSubject.send((peripheral, nil))
@@ -37,7 +38,7 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
-		disconnectedPeripheralsSubject.send((peripheral, error))
+        disconnectedPeripheralsSubject.send((peripheral, false, error))
 	}
 
 	open func centralManager(
@@ -87,7 +88,25 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		}
 	#endif
 
-	// MARK: Instance Methods
-	// BETA
-	// func centralManager(CBCentralManager, didDisconnectPeripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?)
+    public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
+        disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
+    }
+    
+    open func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        Logger.shared.i("willRestoreState called with keys: \(dict.keys.sorted())", category: "ReactiveCentralManagerDelegate")
+        
+        if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+            Logger.shared.i("Restoring \(peripherals.count) peripherals: \(peripherals.map { $0.identifier.uuidString })", category: "ReactiveCentralManagerDelegate")
+        }
+        
+        if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
+            Logger.shared.i("Restoring scan services: \(scanServices)", category: "ReactiveCentralManagerDelegate")
+        }
+        
+        if let scanOptions = dict[CBCentralManagerRestoredStateScanOptionsKey] as? [String: Any] {
+            Logger.shared.i("Restoring scan options: \(scanOptions)", category: "ReactiveCentralManagerDelegate")
+        }
+        
+        restoredPeripheralsSubject.send(dict)
+    }
 }

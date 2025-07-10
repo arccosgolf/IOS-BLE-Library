@@ -146,7 +146,7 @@ extension CentralManager {
 		-> AnyPublisher<CBPeripheral, Error>
 	{
 		let killSwitch = self.disconnectedPeripheralsChannel.tryFirst(where: { p in
-			if let e = p.1 {
+			if let e = p.2 {
 				throw e
 			}
 			return p.0.identifier == peripheral.identifier
@@ -180,7 +180,7 @@ extension CentralManager {
 					return false
 				}
 
-				if let e = r.1 {
+				if let e = r.2 {
 					throw e
 				} else {
 					return true
@@ -305,8 +305,13 @@ extension CentralManager {
 	}
 
 	/// A publisher that emits disconnected peripherals along with errors.
-	public var disconnectedPeripheralsChannel: AnyPublisher<(CBPeripheral, Error?), Never> {
+    public var disconnectedPeripheralsChannel: AnyPublisher<(CBPeripheral, Bool, Error?), Never> {
 		centralManagerDelegate.disconnectedPeripheralsSubject
 			.eraseToAnyPublisher()
 	}
+    
+    public var restoredPeripheralsChannel: AnyPublisher<[String: Any], Never> {
+            centralManagerDelegate.restoredPeripheralsSubject
+                .eraseToAnyPublisher()
+        }
 }

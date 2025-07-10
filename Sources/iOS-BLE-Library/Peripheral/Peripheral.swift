@@ -27,7 +27,6 @@ private class NativeObserver: Observer {
 	private weak var publisher: CurrentValueSubject<CBPeripheralState, Never>!
 	private var observation: NSKeyValueObservation?
     
-    let l = L(category: "peripheral")
 
 	init(
 		peripheral: CoreBluetooth.CBPeripheral,
@@ -81,7 +80,6 @@ private class NativeObserver: Observer {
 public class Peripheral {
     private var serviceDiscoveryQueue = Queue<UUID>()
     
-    let l = L(category: #file)
     
 	/// I'm Errr from Omicron Persei 8
 	public enum Err: Error {
@@ -193,13 +191,13 @@ extension Peripheral {
         return allServices.bluetooth {
             let operation = IdentifiableOperation(id: id) {
                 self.peripheral.discoverServices(serviceUUIDs)
-                self.l.d("\(#function). operation ID: \(id)")
+                Logger.shared.d("\(#function). operation ID: \(id)", category: "Peripheral")
                 if let serviceUUIDs {
                     for sid in serviceUUIDs {
-                        self.l.d("Services: \(sid)")
+                        Logger.shared.d("Services: \(sid)", category: "Peripheral")
                     }
                 } else {
-                    self.l.d("All services")
+                    Logger.shared.d("All services", category: "Peripheral")
                 }
             }
             
