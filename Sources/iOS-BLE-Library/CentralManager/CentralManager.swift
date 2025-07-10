@@ -110,7 +110,7 @@ public class CentralManager {
 		observer.setup()
 	}
     
-    func getState() -> CBManagerState {
+    public func getState() -> CBManagerState {
         return centralManager.state
     }
 }

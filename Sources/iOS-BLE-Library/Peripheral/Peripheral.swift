@@ -148,7 +148,7 @@ public class Peripheral {
 //CG_END
 	}
     
-    func cleanupQueueOnError() {
+    public func cleanupQueueOnError() {
         self.peripheralDelegate.cleanupQueueOnError()
     }
 }
