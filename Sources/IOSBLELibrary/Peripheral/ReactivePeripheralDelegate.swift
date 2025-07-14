@@ -128,14 +128,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	// MARK: Discovering Services
 
 	open func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-//CG_REPLACE
-        let operation = discoveredServicesQueue.dequeue()!
-//CG_WITH
-/*
-         guard let operation = discoveredServicesQueue.dequeue() else { return }
-*/
-//CG_END
-        
+        guard let operation = discoveredServicesQueue.dequeue() else { return }
         let result = BluetoothOperationResult<[CBService]?>(value: peripheral.services, error: error, id: operation.id)
                 
         discoveredServicesSubject.send(result)
@@ -148,7 +141,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
 		error: Error?
     ) {
-        let operationId = discoveredCharacteristicsQueue.dequeue()!
+        guard let operationId = discoveredCharacteristicsQueue.dequeue() else { return }
         let result = BluetoothOperationResult<(CBService, [CBCharacteristic]?)>(value: (service, service.characteristics), error: error, id: operationId)
         
 		discoveredCharacteristicsSubject.send(result)
@@ -158,7 +151,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		_ peripheral: CBPeripheral,
 		didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?
 	) {
-        let operationId = discoveredDescriptorsQueue.dequeue()!
+        guard let operationId = discoveredDescriptorsQueue.dequeue() else { return }
         let result = BluetoothOperationResult<(CBCharacteristic, [CBDescriptor]?)>(value: (characteristic, characteristic.descriptors), error: error, id: operationId)
         
 		discoveredDescriptorsSubject.send(result)
