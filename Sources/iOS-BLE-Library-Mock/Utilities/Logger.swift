@@ -16,7 +16,7 @@ public protocol NordicBluetoothLogger {
 }
 
 public final class Logger {
-    static let shared = Logger()
+    public static let shared = Logger()
     
     private var bluetoothLogger: NordicBluetoothLogger?
     
