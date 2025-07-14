@@ -15,7 +15,7 @@ public protocol NordicBluetoothLogger {
     func e(_ msg : String)
 }
 
-final class Logger {
+public final class Logger {
     static let shared = Logger()
     
     private var bluetoothLogger: NordicBluetoothLogger?
