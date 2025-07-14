@@ -22,7 +22,7 @@ public final class Logger {
     
     private init() {}
     
-    func configure(with logger: NordicBluetoothLogger) {
+    public func configure(with logger: NordicBluetoothLogger) {
         bluetoothLogger = logger
     }
     
