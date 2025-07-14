@@ -8,7 +8,7 @@
 import Foundation
 import os
 
-protocol NordicBluetoothLogger {
+public protocol NordicBluetoothLogger {
     func i(_ msg : String)
     func d(_ msg : String)
     func f(_ msg : String)
