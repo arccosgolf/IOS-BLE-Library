@@ -143,6 +143,10 @@ public class Peripheral {
 			observer.setup()
 		}
 	}
+    
+    public func cleanupQueueOnError() {
+        self.peripheralDelegate.cleanupQueueOnError()
+    }
 }
 
 // MARK: - API
