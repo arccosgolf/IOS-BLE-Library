@@ -99,6 +99,10 @@ public class CentralManager {
 
 		observer.setup()
 	}
+    
+    public func getState() -> CBManagerState {
+        return centralManager.state
+    }
 }
 
 // MARK: Establishing or Canceling Connections with Peripherals
