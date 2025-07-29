@@ -113,6 +113,13 @@ public class CentralManager {
     public func getState() -> CBManagerState {
         return centralManager.state
     }
+    
+    /// Marks that restoration subscribers are ready and flushes any buffered restoration events
+    /// Call this after setting up subscriptions to restoredPeripheralsChannel to ensure
+    /// no restoration events are lost due to initialization timing
+    public func markRestorationSubscribersReady() {
+        centralManagerDelegate.markRestorationSubscribersReady()
+    }
 }
 
 // MARK: Establishing or Canceling Connections with Peripherals
