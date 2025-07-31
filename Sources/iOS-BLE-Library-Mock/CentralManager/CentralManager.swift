@@ -312,4 +312,12 @@ extension CentralManager {
             centralManagerDelegate.restoredPeripheralsSubject
                 .eraseToAnyPublisher()
         }
+    
+    
+    /// Marks that restoration subscribers are ready and flushes any buffered restoration events
+    /// Call this after setting up subscriptions to restoredPeripheralsChannel to ensure
+    /// no restoration events are lost due to initialization timing
+    public func markRestorationSubscribersReady() {
+        centralManagerDelegate.markRestorationSubscribersReady()
+    }
 }
