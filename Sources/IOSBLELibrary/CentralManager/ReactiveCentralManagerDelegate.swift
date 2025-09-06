@@ -71,6 +71,7 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
+        Logger.shared.i("LEGACY didDisconnectPeripheral called for \(peripheral.identifier.uuidString), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
         disconnectedPeripheralsSubject.send((peripheral, false, error))
 	}
 
@@ -122,6 +123,7 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	#endif
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
+        Logger.shared.i("NEW didDisconnectPeripheral called for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
         disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
     }
     
