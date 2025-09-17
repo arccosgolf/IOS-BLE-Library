@@ -85,7 +85,7 @@ GEM
     netrc (0.11.0)
     nkf (0.2.0)
     public_suffix (4.0.7)
-    rexml (3.4.0)
+    rexml (3.4.2)
     ruby-macho (2.5.1)
     ruby2_keywords (0.0.5)
     typhoeus (1.4.1)
@@ -102,6 +102,7 @@ GEM
 
 PLATFORMS
   arm64-darwin-23
+  x86_64-linux
 
 DEPENDENCIES
   activesupport (~> 7.0, >= 7.0.8)
