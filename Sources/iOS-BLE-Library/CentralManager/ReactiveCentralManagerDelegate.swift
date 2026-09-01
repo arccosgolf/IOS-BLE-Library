@@ -23,8 +23,42 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	let stateSubject = CurrentValueSubject<CBManagerState, Never>(.unknown)
 	let scanResultSubject = PassthroughSubject<ScanResult, Never>()
 	let connectedPeripheralSubject = PassthroughSubject<(CBPeripheral, Error?), Never>()
-	let disconnectedPeripheralsSubject = PassthroughSubject<(CBPeripheral, Error?), Never>()
+	let disconnectedPeripheralsSubject = PassthroughSubject<(CBPeripheral, Bool, Error?), Never>()
 	let connectionEventSubject = PassthroughSubject<(CBPeripheral, CBConnectionEvent), Never>()
+	let restoredPeripheralsSubject = PassthroughSubject<[String: Any], Never>()
+
+	// MARK: Restoration Event Buffering
+
+	/// Buffer for restoration events that arrive before subscribers are ready.
+	private var pendingRestorationEvents: [[String: Any]] = []
+
+	/// Whether restoration subscribers are ready to receive events.
+	private var restorationSubscribersReady = false
+
+	/// Guards the restoration buffering state.
+	private let restorationLock = NSLock()
+
+	/// Marks that restoration subscribers are ready and flushes any buffered events.
+	/// Called by `CentralManager.markRestorationSubscribersReady()` once the app has
+	/// attached its `restoredPeripheralsChannel` subscribers.
+	public func markRestorationSubscribersReady() {
+		restorationLock.lock()
+		defer { restorationLock.unlock() }
+
+		Logger.shared.i("Marking restoration subscribers as ready", category: "ReactiveCentralManagerDelegate")
+		restorationSubscribersReady = true
+
+		for event in pendingRestorationEvents {
+			Logger.shared.i("Flushing buffered restoration event with keys: \(event.keys.sorted())", category: "ReactiveCentralManagerDelegate")
+			restoredPeripheralsSubject.send(event)
+		}
+
+		if !pendingRestorationEvents.isEmpty {
+			Logger.shared.i("Flushed \(pendingRestorationEvents.count) buffered restoration events", category: "ReactiveCentralManagerDelegate")
+		}
+
+		pendingRestorationEvents.removeAll()
+	}
 
 	// MARK: Monitoring Connections with Peripherals
 	open func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -35,7 +69,8 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
-		disconnectedPeripheralsSubject.send((peripheral, error))
+		Logger.shared.i("LEGACY didDisconnectPeripheral called for \(peripheral.identifier.uuidString), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
+		disconnectedPeripheralsSubject.send((peripheral, false, error))
 	}
 
 	open func centralManager(
@@ -86,6 +121,38 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	#endif
 
 	// MARK: Instance Methods
-	// BETA
-	// func centralManager(CBCentralManager, didDisconnectPeripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?)
+
+	public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
+		Logger.shared.i("NEW didDisconnectPeripheral called for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
+		disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
+	}
+
+	open func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+		restorationLock.lock()
+		defer { restorationLock.unlock() }
+
+		Logger.shared.i("willRestoreState called with keys: \(dict.keys.sorted())", category: "ReactiveCentralManagerDelegate")
+
+		if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
+			Logger.shared.i("Restoring \(peripherals.count) peripherals: \(peripherals.map { $0.identifier.uuidString })", category: "ReactiveCentralManagerDelegate")
+		}
+
+		if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {
+			Logger.shared.i("Restoring scan services: \(scanServices)", category: "ReactiveCentralManagerDelegate")
+		}
+
+		if let scanOptions = dict[CBCentralManagerRestoredStateScanOptionsKey] as? [String: Any] {
+			Logger.shared.i("Restoring scan options: \(scanOptions)", category: "ReactiveCentralManagerDelegate")
+		}
+
+		if restorationSubscribersReady {
+			// Normal case: subscribers are ready, send immediately.
+			Logger.shared.i("Sending restoration event immediately (subscribers ready)", category: "ReactiveCentralManagerDelegate")
+			restoredPeripheralsSubject.send(dict)
+		} else {
+			// Buffer the event until subscribers are ready.
+			Logger.shared.i("Buffering restoration event (subscribers not ready yet)", category: "ReactiveCentralManagerDelegate")
+			pendingRestorationEvents.append(dict)
+		}
+	}
 }

@@ -91,7 +91,7 @@ public class Peripheral {
 	/// The delegate for handling peripheral events.
 	public let peripheralDelegate: ReactivePeripheralDelegate
 
-	private let stateSubject = CurrentValueSubject<CBPeripheralState, Never>(.disconnected)
+	private let stateSubject: CurrentValueSubject<CBPeripheralState, Never>
 	private var observer: Observer!
 	private lazy var characteristicWriter = CharacteristicWriter(
 		writtenEventsPublisher: self.peripheralDelegate.writtenCharacteristicValuesSubject
@@ -124,6 +124,7 @@ public class Peripheral {
 	public init(peripheral: CBPeripheral, delegate: ReactivePeripheralDelegate = ReactivePeripheralDelegate()) {
 		self.peripheral = peripheral
 		self.peripheralDelegate = delegate
+		self.stateSubject = CurrentValueSubject<CBPeripheralState, Never>(peripheral.state)
         assert(peripheral.delegate == nil, "CBPeripheral's delegate should be nil, otherwise it can lead to problems")
 		peripheral.delegate = delegate
 
@@ -139,6 +140,10 @@ public class Peripheral {
 		observer = NativeObserver(peripheral: peripheral, publisher: stateSubject)
 		observer.setup()
 #endif
+	}
+
+	public func cleanupQueueOnError() {
+		self.peripheralDelegate.cleanupQueueOnError()
 	}
 }
 

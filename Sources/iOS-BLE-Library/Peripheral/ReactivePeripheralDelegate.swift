@@ -229,6 +229,14 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
         modifyServicesSubject.send(invalidatedServices)
 	}
 
+	/// Arccos: recovery hook for a service-discovery reply that will never arrive
+	/// (e.g. the discover call threw). Drops the in-flight operation and starts the next.
+	func cleanupQueueOnError() {
+		Logger.shared.i("Dequeueing services queue on error", category: "ReactivePeripheralDelegate")
+		_ = discoveredServicesQueue.dequeue()
+		discoveredServicesQueue.runNext()
+	}
+
 	// MARK: Monitoring L2CAP Channels
 /*
 	public func peripheral(

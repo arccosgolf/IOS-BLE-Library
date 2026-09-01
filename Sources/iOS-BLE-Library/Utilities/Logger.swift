@@ -10,7 +10,7 @@ import os
 
 @available(iOS 14.0, macOS 11, watchOS 7.0, *)
 private struct Loggers {
-    static var loggers: [UUID : Logger] = [:]
+    static var loggers: [UUID : os.Logger] = [:]
 }
 
 struct L {
@@ -33,7 +33,7 @@ struct L {
         self.shouldLog = enabled
         
         if #available(iOS 14, macOS 11, watchOS 7, *) {
-            Loggers.loggers[self.id] = Logger(subsystem: subsystem, category: category)
+            Loggers.loggers[self.id] = os.Logger(subsystem: subsystem, category: category)
         }
     }
     
