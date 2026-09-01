@@ -160,11 +160,18 @@ extension CentralManager {
 	public func connect(_ peripheral: CBPeripheral, options: [String: Any]? = nil)
 		-> AnyPublisher<CBPeripheral, Error>
 	{
+		// Identity must be checked BEFORE surfacing the error: `disconnectedPeripheralsChannel`
+		// carries every peripheral's disconnects, and throwing first meant an error-carrying
+		// disconnect from an UNRELATED peripheral failed this peripheral's in-flight connect.
+		// (`cancelPeripheralConnection(_:)` below always had the correct ordering.)
 		let killSwitch = self.disconnectedPeripheralsChannel.tryFirst(where: { p in
+			guard p.0.identifier == peripheral.identifier else {
+				return false
+			}
 			if let e = p.2 {
 				throw e
 			}
-			return p.0.identifier == peripheral.identifier
+			return true
 		})
 
 		return self.connectedPeripheralChannel
