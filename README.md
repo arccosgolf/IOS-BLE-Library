@@ -1,66 +1,89 @@
-![Platforms](https://img.shields.io/badge/platforms-iOS%20|%20macOS-333333.svg)
-
 # iOS-BLE-Library
 
-This library is a wrapper around the CoreBluetooth framework which provides a modern async API based on Combine Framework. 
+![Platforms](https://img.shields.io/badge/Platforms-iOS%20|%20iPadOS%20|%20macOS-333333.svg)
+[![License](https://img.shields.io/github/license/nordicsemi/IOS-BLE-Library)](https://github.com/nordicsemi/IOS-BLE-Library/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/release/nordicsemi/IOS-BLE-Library.svg)](https://github.com/nordicsemi/IOS-BLE-Library/releases)
+[![GitHub stars](https://img.shields.io/github/stars/nordicsemi/IOS-BLE-Library)](https://github.com/nordicsemi/IOS-BLE-Library/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/nordicsemi/IOS-BLE-Library)](https://github.com/nordicsemi/IOS-BLE-Library/members)
+[![GitHub contributors](https://img.shields.io/github/contributors/nordicsemi/IOS-BLE-Library)](https://github.com/nordicsemi/IOS-BLE-Library/graphs/contributors)
+
+This library is a wrapper around the [CoreBluetooth](https://developer.apple.com/documentation/corebluetooth/) framework which provides a modern async API based on [Combine](https://developer.apple.com/documentation/combine).
 
 # Library Versions
 
-This package contains two versions of the library: 
-* `iOS-BLE-Library` - the library that uses the native CoreBluetooth API.
-* `iOS-BLE-Library-Mock` - the library that uses the [CoreBluetoothMock](https://github.com/NordicSemiconductor/IOS-CoreBluetooth-Mock) API.
+The package ships **two products**, and consumers pick the one that fits their needs:
+
+- `iOS-BLE-Library` — links real [`CoreBluetooth`](https://developer.apple.com/documentation/corebluetooth/). For production apps.
+- `iOS-BLE-Library-Mock` — links [`CoreBluetoothMock`](https://github.com/nordicsemi/IOS-CoreBluetooth-Mock). The public API is identical (a top-level `Alias.swift` re-exports `CB*` names for the underlying `CBM*` types), so code written for `iOS-BLE-Library` recompiles unchanged against `iOS-BLE-Library-Mock` for unit testing.
+
+# Architecture
+
+Both products are built from a single source tree at `Sources/iOS-BLE-Library/`. The Mock target's compilation unit is produced at build time by the `MockGenerator` SwiftPM build plugin — there are no Python scripts, no committed duplicates, no manual sync step.
+
+At the handful of sites where the two products diverge (mostly imports, plus a couple of init-time branches), the source uses native Swift conditional compilation:
+
+```swift
+#if MOCK_TRANSPORT
+import CoreBluetoothMock
+#else
+import CoreBluetooth
+#endif
+```
+
+The Mock target sets `swiftSettings: [.define("MOCK_TRANSPORT")]`; the native target leaves the flag undefined. The compiler picks the right branch per build.
+
+## For contributors
+
+1. Edit files only in `Sources/iOS-BLE-Library/`. Do not edit anything under `Sources/iOS-BLE-Library-Mock/` (other than `Alias.swift` and `Documentation.docc/`, which are static).
+2. For code that needs to behave differently in the Mock build, wrap it in `#if MOCK_TRANSPORT … #else … #endif`.
+3. Run `swift build` — the plugin re-generates the Mock target's sources automatically.
+
+That's the whole workflow. No `code_gen` step, no marker DSL.
 
 # Installation
+
 ## Swift Package Manager
-The library can be installed using Swift Package Manager.
 
-You can choose between two versions of the library: 
-![`iOS-BLE-Library`](res/Screenshot-1.png)
+Add the package to your `Package.swift` dependencies and pick the product you need:
 
-Or you can add it as a dependency to your library:
 ```swift
-
 let package = Package(
-    /// . . .
+    // ...
     dependencies: [
-        // Set the link to the library and choose the version
-        .package(url: "https://github.com/NordicSemiconductor/IOS-BLE-Library.git", from: "0.3.1"),
+        .package(url: "https://github.com/nordicsemi/IOS-BLE-Library.git", from: "1.0.0"),
     ],
     targets: [
         .target(
-            name: "MyLib",
+            name: "MyApp",
             dependencies: [
-                // You can use "native" CoreBluetooth API
-                .product(name: "iOS-BLE-Library", package: "iOS-BLE-Library")
+                // Production: links real CoreBluetooth
+                .product(name: "iOS-BLE-Library", package: "IOS-BLE-Library")
             ]
         ),
         .testTarget(
-            name: "MyLibTests",
+            name: "MyAppTests",
             dependencies: [
-                "MyLib",
-                // Or you can use the CoreBluetoothMock API
-                .product(name: "iOS-BLE-Library-Mock", package: "iOS-BLE-Library")
+                "MyApp",
+                // Testing: links CoreBluetoothMock
+                .product(name: "iOS-BLE-Library-Mock", package: "IOS-BLE-Library")
             ]
         ),
     ]
 )
 ```
 
-## CocoaPods
-The library can be installed using CocoaPods.
-
-Add the following line to your Podfile:
-```ruby
-pod 'IOS-BLE-Library', '~> 0.3.2'
-```
-
-or 
-```ruby
-pod 'IOS-BLE-Library-Mock', '~> 0.3.2'
-```
-
 # Documentation & Examples
-Please check the [Documentation Page](https://nordicsemiconductor.github.io/IOS-BLE-Library/documentation/ios_ble_library/) to start using the library.
 
-Also you can check [iOS-nRF-Toolbox](https://github.com/NordicSemiconductor/IOS-nRF-Toolbox/tree/develop) to find more examples.
+Please check the [Documentation Page](https://nordicsemi.github.io/IOS-BLE-Library/documentation/ios_ble_library/) to start using the library.
 
+Also you can check [iOS-nRF-Toolbox](https://github.com/nordicsemi/IOS-nRF-Toolbox/tree/develop) to find more examples.
+
+# Special Thanks
+
+Please consider backing this project by using the following **GitHub Sponsor** button.
+
+We want to [thank all of our contributors](https://github.com/nordicsemi/IOS-BLE-Library/graphs/contributors) for all of their additions and improvements to this project. With special mention to one in particular: [Nick!](https://github.com/NickKibish)
+
+<a href="https://github.com/nordicsemi/IOS-BLE-Library/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=nordicsemi/IOS-BLE-Library" />
+</a>
