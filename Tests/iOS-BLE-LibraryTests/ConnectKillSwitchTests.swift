@@ -132,4 +132,37 @@ final class ConnectKillSwitchTests: XCTestCase {
         await fulfillment(of: [aCompleted], timeout: 1)
         XCTAssertEqual(a.state, .connected, "A must remain connected after B's error disconnect")
     }
+
+    /// Acceptance item 3: the identity guard must not swallow the peripheral's OWN
+    /// error-carrying disconnect. A matching disconnect with an error must FAIL the
+    /// connect publisher with that error (not `finished`, not stay alive).
+    func testConnectFailsWithOwnErrorDisconnect() async throws {
+        let a = try await discover(service: .serviceA)
+
+        let aConnected = XCTestExpectation(description: "A connected")
+        let aCompleted = XCTestExpectation(
+            description: "A's connect publisher completes on A's own error disconnect")
+        central.connect(a)
+            .sink(receiveCompletion: { completion in
+                switch completion {
+                case .finished:
+                    XCTFail("A's own error-carrying disconnect must FAIL the connect publisher, not finish it")
+                case .failure(let e as CBMError):
+                    XCTAssertEqual(e.code, .connectionTimeout,
+                                   "A's own disconnect error must surface verbatim; got \(e.code)")
+                case .failure(let e):
+                    XCTFail("CBMError expected; got \(e)")
+                }
+                aCompleted.fulfill()
+            }, receiveValue: { _ in
+                aConnected.fulfill()
+            })
+            .store(in: &cancelables)
+        await fulfillment(of: [aConnected], timeout: 5)
+
+        // Same error the field logs carried. The mock delays .connectionTimeout
+        // disconnects by its simulated supervision timeout (~4s), hence the window.
+        deviceA.peripheral.simulateDisconnection(withError: CBMError(.connectionTimeout))
+        await fulfillment(of: [aCompleted], timeout: 10)
+    }
 }
