@@ -19,61 +19,51 @@ struct BluetoothOperationResult<T> {
     let id: UUID
 }
 
-struct IdentifiableOperation {
-    let id: UUID
-    let block: () -> Void
-}
-
-class SingleTaskQueue {
-    private var queue = Queue<IdentifiableOperation>()
-    let l = L(category: "SingleTaskQueue")
-    private let accessQueue = DispatchQueue(label: "com.ble-library.SingleTaskQueue")
-    
-    func addOperation(_ task: IdentifiableOperation) {
-        accessQueue.sync {
-            l.i("add operation \(task.id)")
-            if queue.isEmpty {
-                l.i("queue is empty")
-                queue.enqueue(task)
-                task.block()
-            } else {
-                l.i("some tasks")
-                queue.enqueue(task)
-            }
-        }
-    }
-    
-    func dequeue() -> IdentifiableOperation? {
-        var task: IdentifiableOperation?
-        accessQueue.sync {
-            task = queue.dequeue()
-        }
-        l.i("dequeue: \(task?.id.uuidString ?? "no task")")
-        return task
-    }
-    
-    func runNext() {
-        accessQueue.sync {
-            let task = queue.peek()
-            l.i("run next: \(task?.id.uuidString ?? "no task")")
-            task?.block()            
-        }
-    }
-}
-
 open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	let l = L(category: #file)
     
     typealias NonFailureSubject<T> = PassthroughSubject<T, Never>
     
-    struct TaskID {
-        let id: UUID
-        let task: () -> ()
+    // MARK: Pending discovery operations (Arccos, Wave C1)
+
+    /// Key for descriptor-discovery lanes: a characteristic within its service.
+    struct CharacteristicKey: Hashable {
+        let service: CBUUID?
+        let characteristic: CBUUID
+
+        init(_ characteristic: CBCharacteristic) {
+            self.service = characteristic.service?.uuid
+            self.characteristic = characteristic.uuid
+        }
     }
-    
-    var discoveredServicesQueue = SingleTaskQueue()
-    var discoveredCharacteristicsQueue = Queue<UUID>()
-    var discoveredDescriptorsQueue = Queue<UUID>()
+
+    /// Identifier of the peripheral this delegate is attached to, set by `Peripheral.init`.
+    /// Used only to label log lines: with two peripherals flapping at once, a failure line
+    /// without it can only be attributed by timing.
+    var peripheralIdentifier: UUID?
+
+    private var peripheralLabel: String {
+        peripheralIdentifier?.uuidString ?? "unattached peripheral"
+    }
+
+    /// One lane: `didDiscoverServices` does not say which request it answers.
+    let serviceDiscovery = DiscoveryLanes<SingleLane>()
+    /// One lane per service: `didDiscoverCharacteristicsFor:` names the service.
+    let characteristicDiscovery = DiscoveryLanes<CBUUID>()
+    /// One lane per characteristic: `didDiscoverDescriptorsFor:` names the characteristic.
+    let descriptorDiscovery = DiscoveryLanes<CharacteristicKey>()
+
+    /// Fails every pending discovery operation on this peripheral with `error` and leaves the
+    /// lanes empty. `Peripheral` calls this when the peripheral disconnects, and
+    /// ``Peripheral/cleanupQueueOnError()`` calls it on the caller's behalf.
+    func failPendingOperations(with error: Error) {
+        let failed = serviceDiscovery.failAll(with: error)
+            + characteristicDiscovery.failAll(with: error)
+            + descriptorDiscovery.failAll(with: error)
+        if failed > 0 {
+            Logger.shared.i("Failed \(failed) pending discovery operation(s) for \(peripheralLabel): \(error)", category: "ReactivePeripheralDelegate")
+        }
+    }
     
     // MARK: Discovering Services
 	let discoveredServicesSubject = NonFailureSubject<
@@ -128,12 +118,13 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	// MARK: Discovering Services
 
 	open func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let operation = discoveredServicesQueue.dequeue() else { return }
+        guard let id = serviceDiscovery.complete(key: SingleLane()) else {
+            Logger.shared.i("Ignoring didDiscoverServices for \(peripheral.identifier.uuidString): no service discovery in flight", category: "ReactivePeripheralDelegate")
+            return
+        }
 
-        let result = BluetoothOperationResult<[CBService]?>(value: peripheral.services, error: error, id: operation.id)
-                
+        let result = BluetoothOperationResult<[CBService]?>(value: peripheral.services, error: error, id: id)
         discoveredServicesSubject.send(result)
-        discoveredServicesQueue.runNext()
 	}
 
     // MARK: Discovering Characteristics and their Descriptors
@@ -142,8 +133,8 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
 		error: Error?
     ) {
-        guard let operationId = discoveredCharacteristicsQueue.dequeue() else {
-            l.d("\(#function) called but Discovered Characteristics Queue is empty.")
+        guard let operationId = characteristicDiscovery.complete(key: service.uuid) else {
+            Logger.shared.i("Ignoring didDiscoverCharacteristicsFor \(service.uuid) on \(peripheral.identifier.uuidString): no discovery in flight for that service", category: "ReactivePeripheralDelegate")
             return
         }
         
@@ -156,8 +147,8 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		_ peripheral: CBPeripheral,
 		didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?
 	) {
-        guard let operationId = discoveredDescriptorsQueue.dequeue() else {
-            l.d("\(#function) called but Discovered Descriptors Queue is empty.")
+        guard let operationId = descriptorDiscovery.complete(key: CharacteristicKey(characteristic)) else {
+            Logger.shared.i("Ignoring didDiscoverDescriptorsFor \(characteristic.uuid) on \(peripheral.identifier.uuidString): no discovery in flight for that characteristic", category: "ReactivePeripheralDelegate")
             return
         }
         let result = BluetoothOperationResult<(CBCharacteristic, [CBDescriptor]?)>(value: (characteristic, characteristic.descriptors), error: error, id: operationId)
@@ -229,12 +220,19 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
         modifyServicesSubject.send(invalidatedServices)
 	}
 
-	/// Arccos: recovery hook for a service-discovery reply that will never arrive
-	/// (e.g. the discover call threw). Drops the in-flight operation and starts the next.
+	/// Arccos: recovery hook for a discovery reply that will never arrive (e.g. the caller's
+	/// own timeout expired). Fails every pending discovery operation on this peripheral, in all
+	/// three lanes, with ``PeripheralError/operationCancelled`` so their publishers terminate,
+	/// and leaves the lanes empty so the next request is issued immediately.
+	///
+	/// A reply that arrives afterwards is dropped only if nothing is pending in its lane. If a
+	/// new request is already in flight for the same key, the late reply completes it (see
+	/// ``Peripheral/cleanupQueueOnError()``): CoreBluetooth replies carry no request identity,
+	/// and swallowing "the next reply" instead would hang the retry whenever the abandoned
+	/// request truly never gets answered, which is this hook's documented use case.
 	func cleanupQueueOnError() {
-		Logger.shared.i("Dequeueing services queue on error", category: "ReactivePeripheralDelegate")
-		_ = discoveredServicesQueue.dequeue()
-		discoveredServicesQueue.runNext()
+		Logger.shared.i("Cancelling pending discovery operations on error for \(peripheralLabel)", category: "ReactivePeripheralDelegate")
+		failPendingOperations(with: PeripheralError.operationCancelled)
 	}
 
 	// MARK: Monitoring L2CAP Channels

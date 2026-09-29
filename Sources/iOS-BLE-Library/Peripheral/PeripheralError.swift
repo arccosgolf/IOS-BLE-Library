@@ -13,6 +13,9 @@ import Foundation
 public enum PeripheralError: LocalizedError {
     
     case onlyConnectedPeripheralsHaveNegotiatedMTU
+    /// Arccos: a pending discovery operation was abandoned through
+    /// ``Peripheral/cleanupQueueOnError()`` before CoreBluetooth answered it.
+    case operationCancelled
     
     // MARK: Description
     
@@ -20,6 +23,8 @@ public enum PeripheralError: LocalizedError {
         switch self {
         case .onlyConnectedPeripheralsHaveNegotiatedMTU:
             return "A connected Peripheral is required to obtain a valid negotiated MTU (Maximum Transmission Unit) size."
+        case .operationCancelled:
+            return "The pending operation was cancelled before the peripheral answered it."
         }
     }
 }

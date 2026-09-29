@@ -72,7 +72,6 @@ private class MockObserver: Observer {
 
 
 public class Peripheral {
-    private var serviceDiscoveryQueue = Queue<UUID>()
     
     let l = L(category: #file)
     
@@ -93,6 +92,8 @@ public class Peripheral {
 
 	private let stateSubject: CurrentValueSubject<CBPeripheralState, Never>
 	private var observer: Observer!
+	/// Arccos (Wave C1): fails pending discovery operations when the peripheral disconnects.
+	private var disconnectObservation: AnyCancellable?
 	private lazy var characteristicWriter = CharacteristicWriter(
 		writtenEventsPublisher: self.peripheralDelegate.writtenCharacteristicValuesSubject
 			.eraseToAnyPublisher(),
@@ -127,6 +128,7 @@ public class Peripheral {
 		self.stateSubject = CurrentValueSubject<CBPeripheralState, Never>(peripheral.state)
         assert(peripheral.delegate == nil, "CBPeripheral's delegate should be nil, otherwise it can lead to problems")
 		peripheral.delegate = delegate
+		delegate.peripheralIdentifier = peripheral.identifier
 
 #if MOCK_TRANSPORT
         if let p = peripheral as? CBMPeripheralNative {
@@ -140,10 +142,55 @@ public class Peripheral {
 		observer = NativeObserver(peripheral: peripheral, publisher: stateSubject)
 		observer.setup()
 #endif
+
+		// Arccos (Wave C1, review finding i10): CoreBluetooth only answers discovery requests
+		// while the peripheral is `.connected`, and the reply-driven lanes cannot advance on
+		// their own. Fail every pending operation the moment the state leaves `.connected`,
+		// with the error CoreBluetooth itself uses for the case, so callers retry instead of
+		// hanging. The trigger is "not connected" rather than "disconnected" on purpose: with
+		// `CBConnectPeripheralOptionEnableAutoReconnect`, and for handles handed back by state
+		// restoration, link loss reports `.connecting` and never passes through `.disconnected`.
+		// `ReactiveCentralManagerDelegate` fails the same operations from `didDisconnectPeripheral`,
+		// the documented signal, in case this KVO path does not fire.
+		disconnectObservation = stateSubject
+			.filter { $0 != .connected }
+			.sink { [peripheralDelegate] _ in
+				peripheralDelegate.failPendingOperations(with: CBError(.peripheralDisconnected))
+			}
 	}
 
+	/// Arccos: recovery hook for when the caller has given up on a discovery reply (for
+	/// example its own timeout expired). Fails every pending discovery operation on this
+	/// peripheral (services, characteristics and descriptors) with
+	/// ``PeripheralError/operationCancelled`` and leaves the queues empty, so the next
+	/// ``discoverServices(serviceUUIDs:)`` is issued immediately.
+	///
+	/// A disconnect does this automatically (with `CBError.peripheralDisconnected`); call this
+	/// only for a peripheral that is still connected but not answering.
+	///
+	/// CoreBluetooth replies carry no request identity. If the abandoned request is answered
+	/// after all, the reply is dropped when nothing is pending in that lane, but it completes
+	/// the next request if one is already in flight for the same key: the reply's value is
+	/// read from the peripheral at that moment, so the data is current, while a late error
+	/// is attributed to the retry. Callers that need a clean slate should let the disconnect
+	/// path run (or cancel the connection) rather than re-issue immediately.
 	public func cleanupQueueOnError() {
 		self.peripheralDelegate.cleanupQueueOnError()
+	}
+
+	/// Arccos (Wave C1): CoreBluetooth silently drops a discovery request issued while the
+	/// peripheral is not `.connected`, and a lane only drains on a state change, so enqueueing
+	/// such a request would wedge the lane until the next disconnect. Fail it now instead.
+	/// Publishing synchronously is safe here: `autoconnect()` subscribes downstream before
+	/// the `.bluetooth { }` block fires.
+	private func enqueueIfConnected<Key: Hashable>(
+		_ operation: DiscoveryLanes<Key>.Operation, on lanes: DiscoveryLanes<Key>
+	) {
+		guard peripheral.state == .connected else {
+			operation.fail(CBError(.peripheralDisconnected))
+			return
+		}
+		lanes.enqueue(operation)
 	}
 }
 
@@ -213,19 +260,18 @@ extension Peripheral {
             }
             .first()
             .bluetooth {
-                let operation = IdentifiableOperation(id: operationID) {
-                    self.peripheral.discoverServices(serviceUUIDs)
-                    self.l.d("\(#function): OpID: \(operationID)")
-                    if let serviceUUIDs {
-                        for sid in serviceUUIDs {
-                            self.l.d("Services: \(sid)")
-                        }
-                    } else {
-                        self.l.d("All services")
-                    }
-                }
-
-                self.peripheralDelegate.discoveredServicesQueue.addOperation(operation)
+                let operation = DiscoveryLanes<SingleLane>.Operation(
+                    id: operationID,
+                    key: SingleLane(),
+                    start: {
+                        self.l.d("discoverServices OpID \(operationID): \(serviceUUIDs.map { "\($0)" } ?? "all services")")
+                        self.peripheral.discoverServices(serviceUUIDs)
+                    },
+                    fail: { error in
+                        self.peripheralDelegate.discoveredServicesSubject.send(
+                            BluetoothOperationResult(value: nil, error: error, id: operationID))
+                    })
+                self.enqueueIfConnected(operation, on: self.peripheralDelegate.serviceDiscovery)
             }
             .autoconnect()
             .eraseToAnyPublisher()
@@ -272,9 +318,18 @@ extension Peripheral {
             .first()
 
 		return allCharacteristics.bluetooth {
-            self.peripheralDelegate.discoveredCharacteristicsQueue.enqueue(id)
-			self.peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
-		}
+            let operation = DiscoveryLanes<CBUUID>.Operation(
+                id: id,
+                key: service.uuid,
+                start: {
+                    self.peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
+                },
+                fail: { error in
+                    self.peripheralDelegate.discoveredCharacteristicsSubject.send(
+                        BluetoothOperationResult(value: (service, nil), error: error, id: id))
+                })
+            self.enqueueIfConnected(operation, on: self.peripheralDelegate.characteristicDiscovery)
+        }
         .autoconnect()
         .eraseToAnyPublisher()
 	}
@@ -302,9 +357,18 @@ extension Peripheral {
 			}
             .first()
 			.bluetooth {
-                self.peripheralDelegate.discoveredDescriptorsQueue.enqueue(id)
-				self.peripheral.discoverDescriptors(for: characteristic)
-			}
+                let operation = DiscoveryLanes<ReactivePeripheralDelegate.CharacteristicKey>.Operation(
+                    id: id,
+                    key: ReactivePeripheralDelegate.CharacteristicKey(characteristic),
+                    start: {
+                        self.peripheral.discoverDescriptors(for: characteristic)
+                    },
+                    fail: { error in
+                        self.peripheralDelegate.discoveredDescriptorsSubject.send(
+                            BluetoothOperationResult(value: (characteristic, nil), error: error, id: id))
+                    })
+                self.enqueueIfConnected(operation, on: self.peripheralDelegate.descriptorDiscovery)
+            }
             .autoconnect()
             .eraseToAnyPublisher()
 	}

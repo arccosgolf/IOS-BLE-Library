@@ -71,6 +71,16 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	) {
 		Logger.shared.i("LEGACY didDisconnectPeripheral called for \(peripheral.identifier.uuidString), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
 		disconnectedPeripheralsSubject.send((peripheral, false, error))
+		failPendingDiscovery(on: peripheral)
+	}
+
+	/// Arccos (Wave C1): fails the peripheral's pending discovery operations from the
+	/// documented disconnect signal. `Peripheral` does the same from KVO of
+	/// `CBPeripheral.state`, which Apple does not document as KVO-compliant; whichever fires
+	/// first drains the lanes and the other is a no-op.
+	private func failPendingDiscovery(on peripheral: CBPeripheral) {
+		(peripheral.delegate as? ReactivePeripheralDelegate)?
+			.failPendingOperations(with: CBError(.peripheralDisconnected))
 	}
 
 	open func centralManager(
@@ -125,6 +135,7 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
 		Logger.shared.i("NEW didDisconnectPeripheral called for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
 		disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
+		failPendingDiscovery(on: peripheral)
 	}
 
 	open func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
