@@ -24,9 +24,9 @@ concurrency:
 
 jobs:
   macos-host:
-    name: swift test (macOS host)
+    name: xcodebuild test (macOS host)
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +35,31 @@ jobs:
           xcodebuild -version
           swift --version
 
+      # Compiles both library flavours (native CoreBluetooth and Mock).
       - name: Build
         run: swift build
 
+      # Not `swift test`: it has no per-test deadline and its test output is not streamed
+      # to the job log, so a hung test burned the whole job timeout with nothing to show
+      # for it (2026-09-29). xcodebuild kills and names the hung test instead.
       - name: Test
-        run: swift test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme IOSBLELibrary-Package \
+            -destination 'platform=macOS' \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            2>&1 | tee xcodebuild-macos.log | grep -E 'Test Suite|Test Case|error:|Executed|\*\* TEST'
+
+      - name: Upload xcodebuild log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-macos-log
+          path: xcodebuild-macos.log
 
   ios-simulator:
     name: xcodebuild test (iOS Simulator)

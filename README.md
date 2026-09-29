@@ -97,7 +97,8 @@ and Arccos-specific behaviour is marked with `// Arccos:` comments.
 ## Running the tests
 
 ```sh
-# macOS host, ~1 minute. This is what CI's first job runs.
+# macOS host, ~1 minute. CI runs the same suite through xcodebuild (below, with
+# `-destination 'platform=macOS'`) so a hung test is killed and named.
 swift test
 
 # iOS Simulator. Also covers the `#if !os(macOS)` paths a host build never compiles.
