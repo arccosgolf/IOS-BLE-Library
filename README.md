@@ -87,3 +87,53 @@ We want to [thank all of our contributors](https://github.com/nordicsemi/IOS-BLE
 <a href="https://github.com/nordicsemi/IOS-BLE-Library/graphs/contributors">
   <img src="https://contributors-img.web.app/image?repo=nordicsemi/IOS-BLE-Library" />
 </a>
+
+# Arccos fork
+
+This repository is Arccos's fork of Nordic's library; the golf app consumes it as the
+`IOSBLELibrary` product. Upstream's file layout is kept so upstream merges apply cleanly,
+and Arccos-specific behaviour is marked with `// Arccos:` comments.
+
+## Running the tests
+
+```sh
+# macOS host, ~1 minute. This is what CI's first job runs.
+swift test
+
+# iOS Simulator. Also covers the `#if !os(macOS)` paths a host build never compiles.
+# Use any iPhone from `xcrun simctl list devices available`.
+xcodebuild test -scheme IOSBLELibrary-Package \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -skipPackagePluginValidation -skipMacroValidation
+```
+
+Tests live in `Tests/iOS-BLE-LibraryTests` and run against `iOS-BLE-Library-Mock`
+([CoreBluetoothMock](https://github.com/nordicsemi/IOS-CoreBluetooth-Mock)), never a real
+radio. `Support/` is the shared harness:
+
+- `CentralManagerTestCase` owns the simulation lifecycle and the scan / connect /
+  expect-disconnect helpers every scenario starts with. Its `makeCentral(restoreIdentifier:)`
+  drives state restoration: CoreBluetoothMock delivers `willRestoreState` synchronously
+  inside the manager's initializer, the same timing as CoreBluetooth.
+- `SimulatedPeripheral` is a configurable simulated device (services, discovery latency via
+  `connectionInterval`, discovery failures, request hooks and counters).
+- `withTimeout` bounds an `await` so a hang fails one test instead of the suite. Use it
+  around any library call that can hang; that is this library's main defect class.
+
+CoreBluetoothMock keeps process-wide state, so tests run serially. Do not pass
+`--parallel`. CI (`.github/workflows/ci.yml`) runs both commands above on every pull request.
+
+Tests wrapped in `XCTExpectFailure { }` document a known defect that is scheduled but not
+yet fixed. When the fix lands, remove the wrapper; XCTest fails a test that unexpectedly
+passes, so a stale marker cannot go unnoticed. Keep the assertions inside the closure:
+expected-failure matching is thread-scoped and does not survive an `await`.
+
+## Shipping a change to the app
+
+Feature flags cannot reach inside an SPM package, so the pin is the release unit:
+
+1. Land the fork change together with its unit tests.
+2. Tag it `arccos-<upstream version>-<n>` (for example `arccos-0.4.5-rebase`, then
+   `arccos-0.4.5-1`). The release workflow builds and tests the tag.
+3. Bump the app's pin to that tag. Pin by tag or revision, never by branch, and ship one
+   behaviour change per bump so a regression rolls back by re-pinning the previous tag.

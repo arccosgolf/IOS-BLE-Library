@@ -1,0 +1,88 @@
+name: CI
+
+# Runs the package's test suite on every push to main and every pull request.
+#
+# Two jobs on purpose:
+#   - `swift test` on the macOS host is the fast path and what contributors run locally.
+#   - the iOS Simulator run covers the `#if !os(macOS)` code paths (connection events,
+#     ANCS) that a host build never compiles.
+#
+# Do NOT add swift-actions/setup-swift here: it installs a stand-alone Swift 5.x toolchain
+# that cannot compile against the runner's current Xcode SDK (that is what broke the
+# release workflow on the arccos-0.4.5-rebase tag). The Xcode bundled with the runner
+# image is the toolchain.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-host:
+    name: swift test (macOS host)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  ios-simulator:
+    name: xcodebuild test (iOS Simulator)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version
+
+      # Simulator device names change with every Xcode release; resolve one at run time
+      # instead of pinning "iPhone N" in this file.
+      - name: Pick a simulator
+        id: sim
+        run: |
+          name="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          names = [d["name"]
+                   for runtime, ds in devices.items() if "iOS" in runtime
+                   for d in ds if d["name"].startswith("iPhone")]
+          print(names[0])')"
+          echo "Using simulator: $name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      # Per-test execution allowance: the library's known defect class is awaits that never
+      # resume, so a regression must fail one test instead of hanging the job.
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme IOSBLELibrary-Package \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            2>&1 | tee xcodebuild.log | grep -E 'Test Suite|Test Case|error:|Executed|\*\* TEST'
+
+      - name: Upload xcodebuild log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
