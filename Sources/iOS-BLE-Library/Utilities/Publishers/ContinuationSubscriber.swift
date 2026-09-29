@@ -8,6 +8,13 @@
 import Combine
 import Foundation
 
+/// Bridges a publisher's first value into a `CheckedContinuation` (see `Publisher.firstValue`).
+///
+/// Arccos (Wave C2, review finding i12): a completion that arrives before any value resumes the
+/// continuation by throwing. Upstream ignored `.finished`, which left the awaiting task suspended
+/// forever whenever a publisher finished empty (a connect cancelled before it completed, a scan
+/// stopped before it matched). The continuation is resumed exactly once: `state` goes
+/// `.terminated` under the lock before any resume, and every later event is dropped.
 class ContinuationSubscriber<Upstream: Publisher>: Subscriber {
 
 	typealias Input = Upstream.Output
@@ -59,20 +66,23 @@ class ContinuationSubscriber<Upstream: Publisher>: Subscriber {
 
 	func receive(completion: Subscribers.Completion<Upstream.Failure>) {
 		lock.lock()
-		guard case .receivedSubscription = state else {
+		if case .terminated = state {
 			lock.unlock()
 			return
 		}
 
 		self.state = .terminated
+		self.subscription = nil
+		lock.unlock()
 
 		switch completion {
 		case .finished:
-			break
+			// Arccos (Wave C2): no value is coming. Throw so the caller can retry or report,
+			// instead of holding its task (and, in the app, the reconnection lock) forever.
+			continuation.resume(throwing: FirstValueError.finishedWithoutValue)
 		case .failure(let failure):
 			continuation.resume(throwing: failure)
 		}
-		lock.unlock()
 	}
 }
 
