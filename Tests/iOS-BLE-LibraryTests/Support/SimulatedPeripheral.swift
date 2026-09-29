@@ -39,6 +39,8 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
 
     /// Called on the thread that issued `discoverServices`, before the mock schedules its reply.
     var onServiceDiscoveryRequest: ((CBMPeripheralSpec) -> Void)?
+    /// Called on the thread that issued `discoverCharacteristics`, before the mock schedules its reply.
+    var onCharacteristicDiscoveryRequest: ((CBMPeripheralSpec, CBMServiceMock) -> Void)?
 
     private(set) var serviceDiscoveryRequests = 0
     private(set) var characteristicDiscoveryRequests = 0
@@ -86,6 +88,12 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     /// delivers, so wait it out first.
     var serviceDiscoveryLatency: TimeInterval { connectionInterval * Double(services.count) }
 
+    /// How long CoreBluetoothMock waits before answering a full characteristic discovery on
+    /// `service` (`connectionInterval × characteristic count`). Same caveat as above.
+    func characteristicDiscoveryLatency(for service: CBMServiceMock) -> TimeInterval {
+        connectionInterval * Double(service.characteristics?.count ?? 0)
+    }
+
     /// - Parameters:
     ///   - name: Advertised local name and connected name.
     ///   - services: The GATT database. Discovery latency in the mock is
@@ -130,6 +138,7 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
         for service: CBMServiceMock
     ) -> Result<Void, Error> {
         characteristicDiscoveryRequests += 1
+        onCharacteristicDiscoveryRequest?(peripheral, service)
         return characteristicDiscoveryResult
     }
 

@@ -4,14 +4,9 @@
 //  Arccos: the "connects but never becomes usable" family (review finding i10,
 //  Wave C1 / CU-868m1mrcy).
 //
-//  These tests pin the *current* behaviour as expected failures. They prove the harness
-//  can stage a disconnect in the middle of service discovery and observe the outcome
-//  within a deadline; the C1 fix flips them green by removing the `XCTExpectFailure`
-//  wrappers, which XCTest enforces (`strict` is the default: an unexpected pass fails).
-//
-//  Assertions sit inside the synchronous `XCTExpectFailure { }` closure on purpose:
-//  expected-failure matching is thread-scoped, so an assertion placed after an `await`
-//  is matched only when the continuation happens to resume on the same thread.
+//  A disconnect, or the caller giving up, must fail every pending discovery operation on
+//  the peripheral promptly, and the next request must reach CoreBluetooth. These are the
+//  card's acceptance tests plus the correlation cases the fix rests on.
 //
 
 import Combine
@@ -22,18 +17,24 @@ import XCTest
 
 final class ServiceDiscoveryDisconnectTests: CentralManagerTestCase {
 
+    private static let serviceUUIDs = ["1810", "1811", "1812", "1813"].map { CBMUUID(string: $0) }
+
     /// Four services at a 0.5 s connection interval: the mock answers service discovery
-    /// after `interval × count` = 2 s, which leaves room to disconnect mid-discovery.
+    /// after `interval × count` = 2 s, which leaves room to act mid-discovery.
     private func makeSlowLink() -> SimulatedPeripheral {
         SimulatedPeripheral(
             name: "Link",
-            services: ["1810", "1811", "1812", "1813"].map { .primary(CBMUUID(string: $0)) },
+            services: Self.serviceUUIDs.map { .primary($0) },
             connectionInterval: 0.5)
     }
 
-    /// Connects `device`, starts service discovery, waits until the mock has received the
-    /// request, then drops the link. Returns the still-pending discovery task.
-    private func startDiscoveryThenDisconnect(
+    private func characteristics(_ uuids: [String]) -> [CBMCharacteristicMock] {
+        uuids.map { CBMCharacteristicMock(type: CBMUUID(string: $0), properties: .read) }
+    }
+
+    /// Connects `device` and starts service discovery; returns once the mock has received the
+    /// request, with the discovery still pending.
+    private func startSlowServiceDiscovery(
         _ device: SimulatedPeripheral,
         on central: CentralManager
     ) async throws -> (Peripheral, Task<[CBService], Error>) {
@@ -43,50 +44,112 @@ final class ServiceDiscoveryDisconnectTests: CentralManagerTestCase {
 
         let requestSeen = expectation(description: "mock received the service discovery request")
         device.onServiceDiscoveryRequest = { _ in requestSeen.fulfill() }
-
         let discovery = Task { try await peripheral.discoverServices(serviceUUIDs: nil).firstValue }
         await fulfillment(of: [requestSeen], timeout: 2)
         device.onServiceDiscoveryRequest = nil
 
-        let dropped = expectDisconnect(of: cbPeripheral.identifier, on: central)
-        device.spec.simulateDisconnection(withError: CBMError(.peripheralDisconnected))
-        await fulfillment(of: [dropped], timeout: 3)
-
         return (peripheral, discovery)
     }
 
-    /// C1 acceptance: "a disconnect mid-discovery fails all pending ops on that peripheral
-    /// within 1 s". Today the awaiting publisher never completes.
+    private func dropLink(
+        _ device: SimulatedPeripheral,
+        _ peripheral: Peripheral,
+        on central: CentralManager
+    ) async {
+        let dropped = expectDisconnect(of: peripheral.peripheral.identifier, on: central)
+        device.spec.simulateDisconnection(withError: CBMError(.peripheralDisconnected))
+        await fulfillment(of: [dropped], timeout: 3)
+    }
+
+    private func assertFailed<T>(
+        _ result: Result<T, Error>,
+        withCBErrorCode code: CBError.Code,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        switch result {
+        case .success:
+            XCTFail("expected a failure with CBError.\(code), got a value", file: file, line: line)
+        case .failure(let error as TimeoutError):
+            XCTFail("hung: \(error)", file: file, line: line)
+        case .failure(let error):
+            XCTAssertEqual((error as? CBError)?.code, code, "unexpected error: \(error)", file: file, line: line)
+        }
+    }
+
+    // MARK: Disconnect fails pending operations (C1 acceptance)
+
     func testDisconnectDuringServiceDiscoveryFailsThePendingOperation() async throws {
         let link = makeSlowLink()
         let central = try makeCentral(peripherals: [link])
-        let (_, discovery) = try await startDiscoveryThenDisconnect(link, on: central)
-        defer { discovery.cancel() }
+        let (peripheral, discovery) = try await startSlowServiceDiscovery(link, on: central)
+
+        await dropLink(link, peripheral, on: central)
 
         let result = await outcome {
             try await withTimeout(1, "discoverServices after disconnect") { try await discovery.value }
         }
-
-        XCTExpectFailure("i10 / CU-868m1mrcy: pending discovery ops are not failed on disconnect yet") {
-            switch result {
-            case .success:
-                XCTFail("discoverServices must fail once the peripheral has disconnected")
-            case .failure(is TimeoutError):
-                XCTFail("discoverServices hung: the pending op was not failed within 1 s of the disconnect")
-            case .failure:
-                break  // What C1 delivers: the pending op fails with an error.
-            }
-        }
+        assertFailed(result, withCBErrorCode: .peripheralDisconnected)
+        XCTAssertTrue(peripheral.peripheralDelegate.serviceDiscovery.isEmpty)
     }
 
-    /// The wedge: with the head of the discovery queue never dequeued, the *next*
-    /// `discoverServices()` on the same peripheral is enqueued behind it and never reaches
-    /// CoreBluetooth, even after the peripheral reconnected.
-    func testDiscoveryAfterReconnectIsNotStuckBehindTheWedgedOperation() async throws {
+    func testDisconnectDuringCharacteristicDiscoveryFailsThePendingOperation() async throws {
+        let service = CBMServiceMock.primary(
+            CBMUUID(string: "1810"), characteristics: characteristics(["2A00", "2A01", "2A02", "2A03"]))
+        let link = SimulatedPeripheral(name: "Link", services: [service], connectionInterval: 0.5)
+        let central = try makeCentral(peripherals: [link])
+        let cbPeripheral = try await discover(link, on: central)
+        try await connect(cbPeripheral, on: central)
+        let peripheral = Peripheral(peripheral: cbPeripheral)
+        let services = try await withTimeout(3, "discoverServices") {
+            try await peripheral.discoverServices(serviceUUIDs: nil).firstValue
+        }
+        let cbService = try XCTUnwrap(services.first)
+
+        let requestSeen = expectation(description: "mock received the characteristic discovery request")
+        link.onCharacteristicDiscoveryRequest = { _, _ in requestSeen.fulfill() }
+        let discovery = Task { try await peripheral.discoverCharacteristics(nil, for: cbService).firstValue }
+        await fulfillment(of: [requestSeen], timeout: 2)
+        link.onCharacteristicDiscoveryRequest = nil
+
+        await dropLink(link, peripheral, on: central)
+
+        let result = await outcome {
+            try await withTimeout(1, "discoverCharacteristics after disconnect") { try await discovery.value }
+        }
+        assertFailed(result, withCBErrorCode: .peripheralDisconnected)
+        XCTAssertTrue(peripheral.peripheralDelegate.characteristicDiscovery.isEmpty)
+    }
+
+    func testDisconnectFailsQueuedOperationsBehindTheInFlightOne() async throws {
         let link = makeSlowLink()
         let central = try makeCentral(peripherals: [link])
-        let (peripheral, discovery) = try await startDiscoveryThenDisconnect(link, on: central)
-        defer { discovery.cancel() }
+        let (peripheral, first) = try await startSlowServiceDiscovery(link, on: central)
+
+        let second = Task { try await peripheral.discoverServices(serviceUUIDs: nil).firstValue }
+        try await waitUntil(1, "second discovery queued") {
+            peripheral.peripheralDelegate.serviceDiscovery.pendingCount == 2
+        }
+        XCTAssertEqual(link.serviceDiscoveryRequests, 1, "the second request waits behind the in-flight one")
+
+        await dropLink(link, peripheral, on: central)
+
+        let firstResult = await outcome { try await withTimeout(1, "first discovery") { try await first.value } }
+        let secondResult = await outcome { try await withTimeout(1, "second discovery") { try await second.value } }
+        assertFailed(firstResult, withCBErrorCode: .peripheralDisconnected)
+        assertFailed(secondResult, withCBErrorCode: .peripheralDisconnected)
+        XCTAssertEqual(link.serviceDiscoveryRequests, 1, "a queued request is never issued to a disconnected peripheral")
+    }
+
+    // MARK: The next request is not stuck behind the failed one
+
+    func testDiscoveryAfterReconnectStartsFreshAndSucceeds() async throws {
+        let link = makeSlowLink()
+        let central = try makeCentral(peripherals: [link])
+        let (peripheral, discovery) = try await startSlowServiceDiscovery(link, on: central)
+
+        await dropLink(link, peripheral, on: central)
+        _ = await outcome { try await withTimeout(1, "discovery failed by disconnect") { try await discovery.value } }
 
         // Let the mock's reply timer for the first discovery fire while we are disconnected
         // (see `SimulatedPeripheral.serviceDiscoveryLatency`); real CoreBluetooth would never
@@ -96,25 +159,76 @@ final class ServiceDiscoveryDisconnectTests: CentralManagerTestCase {
         try await connect(peripheral.peripheral, on: central)
         let requestsBeforeRetry = link.serviceDiscoveryRequests
 
-        let result = await outcome {
-            try await withTimeout(4, "discoverServices after reconnect") {
-                try await peripheral.discoverServices(serviceUUIDs: nil).firstValue
-            }
+        let services = try await withTimeout(4, "discoverServices after reconnect") {
+            try await peripheral.discoverServices(serviceUUIDs: nil).firstValue
         }
-        let requestsAfterRetry = link.serviceDiscoveryRequests
+        XCTAssertEqual(services.map { $0.uuid }, Self.serviceUUIDs)
+        XCTAssertEqual(link.serviceDiscoveryRequests, requestsBeforeRetry + 1, "the retry reaches CoreBluetooth")
+    }
 
-        XCTExpectFailure("i10 / CU-868m1mrcy: the services queue wedges behind the op that never completed") {
-            switch result {
-            case .success(let services):
-                XCTAssertEqual(services.count, 4)
-            case .failure(is TimeoutError):
-                XCTFail("discoverServices after reconnect hung")
-            case .failure(let error):
-                XCTFail("discoverServices after reconnect failed: \(error)")
-            }
-            XCTAssertEqual(
-                requestsAfterRetry, requestsBeforeRetry + 1,
-                "the retry never reached CoreBluetooth: it is queued behind the wedged op")
+    // MARK: cleanupQueueOnError publishes errors and cannot double-fire
+
+    func testCleanupQueueOnErrorFailsPendingOperationsWithoutIssuingMore() async throws {
+        let link = makeSlowLink()
+        let central = try makeCentral(peripherals: [link])
+        let (peripheral, first) = try await startSlowServiceDiscovery(link, on: central)
+        let second = Task { try await peripheral.discoverServices(serviceUUIDs: nil).firstValue }
+        try await waitUntil(1, "second discovery queued") {
+            peripheral.peripheralDelegate.serviceDiscovery.pendingCount == 2
         }
+
+        peripheral.cleanupQueueOnError()
+
+        for (label, task) in [("first", first), ("second", second)] {
+            let result = await outcome { try await withTimeout(1, "\(label) discovery after cleanup") { try await task.value } }
+            guard case .failure(let error) = result, case PeripheralError.operationCancelled = error else {
+                XCTFail("\(label) discovery: expected PeripheralError.operationCancelled, got \(result)")
+                continue
+            }
+        }
+        XCTAssertTrue(peripheral.peripheralDelegate.serviceDiscovery.isEmpty)
+        XCTAssertEqual(link.serviceDiscoveryRequests, 1, "cleanup must not start the queued request (the old double-fire)")
+
+        // The abandoned request's reply still arrives, since the peripheral is connected. It
+        // must be dropped, and nothing new may be issued because of it.
+        try await Task.sleep(nanoseconds: UInt64((link.serviceDiscoveryLatency + 0.25) * 1_000_000_000))
+        XCTAssertEqual(link.serviceDiscoveryRequests, 1)
+        XCTAssertTrue(peripheral.peripheralDelegate.serviceDiscovery.isEmpty)
+
+        // The next request starts immediately and completes normally.
+        let services = try await withTimeout(4, "discoverServices after cleanup") {
+            try await peripheral.discoverServices(serviceUUIDs: nil).firstValue
+        }
+        XCTAssertEqual(services.map { $0.uuid }, Self.serviceUUIDs)
+        XCTAssertEqual(link.serviceDiscoveryRequests, 2)
+    }
+
+    // MARK: Replies are correlated by what they identify
+
+    func testConcurrentCharacteristicDiscoveryOnDifferentServicesIsCorrelatedByService() async throws {
+        let first = CBMServiceMock.primary(CBMUUID(string: "1810"), characteristics: characteristics(["2A00", "2A01"]))
+        let second = CBMServiceMock.primary(CBMUUID(string: "1811"), characteristics: characteristics(["2A02", "2A03", "2A04"]))
+        let link = SimulatedPeripheral(name: "Link", services: [first, second], connectionInterval: 0.1)
+        let central = try makeCentral(peripherals: [link])
+        let cbPeripheral = try await discover(link, on: central)
+        try await connect(cbPeripheral, on: central)
+        let peripheral = Peripheral(peripheral: cbPeripheral)
+        let services = try await withTimeout(3, "discoverServices") {
+            try await peripheral.discoverServices(serviceUUIDs: nil).firstValue
+        }
+        let cbFirst = try XCTUnwrap(services.first { $0.uuid == first.uuid })
+        let cbSecond = try XCTUnwrap(services.first { $0.uuid == second.uuid })
+
+        async let firstCharacteristics = withTimeout(3, "characteristics of 1810") {
+            try await peripheral.discoverCharacteristics(nil, for: cbFirst).firstValue
+        }
+        async let secondCharacteristics = withTimeout(3, "characteristics of 1811") {
+            try await peripheral.discoverCharacteristics(nil, for: cbSecond).firstValue
+        }
+        let (ofFirst, ofSecond) = try await (firstCharacteristics, secondCharacteristics)
+
+        XCTAssertEqual(ofFirst.map { $0.uuid.uuidString }, ["2A00", "2A01"])
+        XCTAssertEqual(ofSecond.map { $0.uuid.uuidString }, ["2A02", "2A03", "2A04"])
+        XCTAssertEqual(link.characteristicDiscoveryRequests, 2, "both requests were issued without waiting on each other")
     }
 }

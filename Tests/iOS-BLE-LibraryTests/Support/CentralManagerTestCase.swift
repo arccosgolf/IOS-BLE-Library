@@ -111,6 +111,21 @@ class CentralManagerTestCase: XCTestCase {
         }
     }
 
+    /// Polls `condition` every 20 ms until it holds, or throws `TimeoutError` after `timeout`.
+    func waitUntil(
+        _ timeout: TimeInterval = 2,
+        _ label: String = "condition",
+        _ condition: @escaping () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                throw TimeoutError(seconds: timeout, label: label)
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
     /// Subscribes *now* and returns an expectation that is fulfilled when the central reports
     /// a disconnect for `identifier`. Subscribe-before-trigger avoids missing a synchronous event.
     ///
