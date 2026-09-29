@@ -142,12 +142,17 @@ public class Peripheral {
 		observer.setup()
 #endif
 
-		// Arccos (Wave C1, review finding i10): CoreBluetooth stops answering a peripheral's
-		// discovery requests once it disconnects, and the reply-driven lanes cannot advance on
-		// their own. Fail every pending operation the moment the state flips, with the error
-		// CoreBluetooth itself uses for the case, so callers retry instead of hanging.
+		// Arccos (Wave C1, review finding i10): CoreBluetooth only answers discovery requests
+		// while the peripheral is `.connected`, and the reply-driven lanes cannot advance on
+		// their own. Fail every pending operation the moment the state leaves `.connected`,
+		// with the error CoreBluetooth itself uses for the case, so callers retry instead of
+		// hanging. The trigger is "not connected" rather than "disconnected" on purpose: with
+		// `CBConnectPeripheralOptionEnableAutoReconnect`, and for handles handed back by state
+		// restoration, link loss reports `.connecting` and never passes through `.disconnected`.
+		// `ReactiveCentralManagerDelegate` fails the same operations from `didDisconnectPeripheral`,
+		// the documented signal, in case this KVO path does not fire.
 		disconnectObservation = stateSubject
-			.filter { $0 == .disconnected }
+			.filter { $0 != .connected }
 			.sink { [peripheralDelegate] _ in
 				peripheralDelegate.failPendingOperations(with: CBError(.peripheralDisconnected))
 			}
@@ -155,13 +160,36 @@ public class Peripheral {
 
 	/// Arccos: recovery hook for when the caller has given up on a discovery reply (for
 	/// example its own timeout expired). Fails every pending discovery operation on this
-	/// peripheral with ``PeripheralError/operationCancelled`` and leaves the queues empty, so
-	/// the next ``discoverServices(serviceUUIDs:)`` is issued immediately.
+	/// peripheral (services, characteristics and descriptors) with
+	/// ``PeripheralError/operationCancelled`` and leaves the queues empty, so the next
+	/// ``discoverServices(serviceUUIDs:)`` is issued immediately.
 	///
 	/// A disconnect does this automatically (with `CBError.peripheralDisconnected`); call this
 	/// only for a peripheral that is still connected but not answering.
+	///
+	/// CoreBluetooth replies carry no request identity. If the abandoned request is answered
+	/// after all, the reply is dropped when nothing is pending in that lane, but it completes
+	/// the next request if one is already in flight for the same key: the reply's value is
+	/// read from the peripheral at that moment, so the data is current, while a late error
+	/// is attributed to the retry. Callers that need a clean slate should let the disconnect
+	/// path run (or cancel the connection) rather than re-issue immediately.
 	public func cleanupQueueOnError() {
 		self.peripheralDelegate.cleanupQueueOnError()
+	}
+
+	/// Arccos (Wave C1): CoreBluetooth silently drops a discovery request issued while the
+	/// peripheral is not `.connected`, and a lane only drains on a state change, so enqueueing
+	/// such a request would wedge the lane until the next disconnect. Fail it now instead.
+	/// Publishing synchronously is safe here: `autoconnect()` subscribes downstream before
+	/// the `.bluetooth { }` block fires.
+	private func enqueueIfConnected<Key: Hashable>(
+		_ operation: DiscoveryLanes<Key>.Operation, on lanes: DiscoveryLanes<Key>
+	) {
+		guard peripheral.state == .connected else {
+			operation.fail(CBError(.peripheralDisconnected))
+			return
+		}
+		lanes.enqueue(operation)
 	}
 }
 
@@ -242,7 +270,7 @@ extension Peripheral {
                         self.peripheralDelegate.discoveredServicesSubject.send(
                             BluetoothOperationResult(value: nil, error: error, id: operationID))
                     })
-                self.peripheralDelegate.serviceDiscovery.enqueue(operation)
+                self.enqueueIfConnected(operation, on: self.peripheralDelegate.serviceDiscovery)
             }
             .autoconnect()
             .eraseToAnyPublisher()
@@ -299,7 +327,7 @@ extension Peripheral {
                     self.peripheralDelegate.discoveredCharacteristicsSubject.send(
                         BluetoothOperationResult(value: (service, nil), error: error, id: id))
                 })
-            self.peripheralDelegate.characteristicDiscovery.enqueue(operation)
+            self.enqueueIfConnected(operation, on: self.peripheralDelegate.characteristicDiscovery)
         }
         .autoconnect()
         .eraseToAnyPublisher()
@@ -338,7 +366,7 @@ extension Peripheral {
                         self.peripheralDelegate.discoveredDescriptorsSubject.send(
                             BluetoothOperationResult(value: (characteristic, nil), error: error, id: id))
                     })
-                self.peripheralDelegate.descriptorDiscovery.enqueue(operation)
+                self.enqueueIfConnected(operation, on: self.peripheralDelegate.descriptorDiscovery)
             }
             .autoconnect()
             .eraseToAnyPublisher()

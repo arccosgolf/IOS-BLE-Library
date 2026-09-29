@@ -212,10 +212,15 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	}
 
 	/// Arccos: recovery hook for a discovery reply that will never arrive (e.g. the caller's
-	/// own timeout expired). Fails every pending discovery operation on this peripheral with
-	/// ``PeripheralError/operationCancelled`` so their publishers terminate, and leaves the
-	/// lanes empty so the next request is issued immediately. A reply that arrives afterwards
-	/// is dropped as unsolicited; it cannot be attributed to a later request.
+	/// own timeout expired). Fails every pending discovery operation on this peripheral, in all
+	/// three lanes, with ``PeripheralError/operationCancelled`` so their publishers terminate,
+	/// and leaves the lanes empty so the next request is issued immediately.
+	///
+	/// A reply that arrives afterwards is dropped only if nothing is pending in its lane. If a
+	/// new request is already in flight for the same key, the late reply completes it (see
+	/// ``Peripheral/cleanupQueueOnError()``): CoreBluetooth replies carry no request identity,
+	/// and swallowing "the next reply" instead would hang the retry whenever the abandoned
+	/// request truly never gets answered, which is this hook's documented use case.
 	func cleanupQueueOnError() {
 		Logger.shared.i("Cancelling pending discovery operations on error", category: "ReactivePeripheralDelegate")
 		failPendingOperations(with: PeripheralError.operationCancelled)

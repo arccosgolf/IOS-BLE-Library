@@ -41,6 +41,8 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     var onServiceDiscoveryRequest: ((CBMPeripheralSpec) -> Void)?
     /// Called on the thread that issued `discoverCharacteristics`, before the mock schedules its reply.
     var onCharacteristicDiscoveryRequest: ((CBMPeripheralSpec, CBMServiceMock) -> Void)?
+    /// Called on the thread that issued `discoverDescriptors`, before the mock schedules its reply.
+    var onDescriptorDiscoveryRequest: ((CBMPeripheralSpec, CBMCharacteristicMock) -> Void)?
 
     private(set) var serviceDiscoveryRequests = 0
     private(set) var characteristicDiscoveryRequests = 0
@@ -92,6 +94,12 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     /// `service` (`connectionInterval × characteristic count`). Same caveat as above.
     func characteristicDiscoveryLatency(for service: CBMServiceMock) -> TimeInterval {
         connectionInterval * Double(service.characteristics?.count ?? 0)
+    }
+
+    /// How long CoreBluetoothMock waits before answering a full descriptor discovery on
+    /// `characteristic` (`connectionInterval × descriptor count`). Same caveat as above.
+    func descriptorDiscoveryLatency(for characteristic: CBMCharacteristicMock) -> TimeInterval {
+        connectionInterval * Double(characteristic.descriptors?.count ?? 0)
     }
 
     /// - Parameters:
@@ -147,6 +155,7 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
         didReceiveDescriptorsDiscoveryRequestFor characteristic: CBMCharacteristicMock
     ) -> Result<Void, Error> {
         descriptorDiscoveryRequests += 1
+        onDescriptorDiscoveryRequest?(peripheral, characteristic)
         return descriptorDiscoveryResult
     }
 }
