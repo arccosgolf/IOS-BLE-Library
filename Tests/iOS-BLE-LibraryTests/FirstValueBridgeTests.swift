@@ -203,6 +203,9 @@ final class FirstValueLibraryPathTests: CentralManagerTestCase {
     }
 
     func testConnectCancelledWhileConnectingUnderAutoReconnectThrowsInsteadOfHanging() async throws {
+        guard #available(iOS 17.0, macOS 14.0, tvOS 17.0, watchOS 10.0, *) else {
+            throw XCTSkip("auto-reconnect needs iOS 17 / macOS 14")
+        }
         // The app connects Links with auto-reconnect; cancelling drops that too and reports
         // the same error-free disconnect.
         try await assertCancelledConnectThrows(
