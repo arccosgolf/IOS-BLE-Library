@@ -128,6 +128,7 @@ public class Peripheral {
 		self.stateSubject = CurrentValueSubject<CBPeripheralState, Never>(peripheral.state)
         assert(peripheral.delegate == nil, "CBPeripheral's delegate should be nil, otherwise it can lead to problems")
 		peripheral.delegate = delegate
+		delegate.peripheralIdentifier = peripheral.identifier
 
 #if MOCK_TRANSPORT
         if let p = peripheral as? CBMPeripheralNative {

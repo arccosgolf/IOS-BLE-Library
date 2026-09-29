@@ -37,6 +37,15 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
         }
     }
 
+    /// Identifier of the peripheral this delegate is attached to, set by `Peripheral.init`.
+    /// Used only to label log lines: with two peripherals flapping at once, a failure line
+    /// without it can only be attributed by timing.
+    var peripheralIdentifier: UUID?
+
+    private var peripheralLabel: String {
+        peripheralIdentifier?.uuidString ?? "unattached peripheral"
+    }
+
     /// One lane: `didDiscoverServices` does not say which request it answers.
     let serviceDiscovery = DiscoveryLanes<SingleLane>()
     /// One lane per service: `didDiscoverCharacteristicsFor:` names the service.
@@ -52,7 +61,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
             + characteristicDiscovery.failAll(with: error)
             + descriptorDiscovery.failAll(with: error)
         if failed > 0 {
-            Logger.shared.i("Failed \(failed) pending discovery operation(s): \(error)", category: "ReactivePeripheralDelegate")
+            Logger.shared.i("Failed \(failed) pending discovery operation(s) for \(peripheralLabel): \(error)", category: "ReactivePeripheralDelegate")
         }
     }
     
@@ -110,7 +119,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 
 	open func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let id = serviceDiscovery.complete(key: SingleLane()) else {
-            Logger.shared.i("Ignoring didDiscoverServices: no service discovery in flight", category: "ReactivePeripheralDelegate")
+            Logger.shared.i("Ignoring didDiscoverServices for \(peripheral.identifier.uuidString): no service discovery in flight", category: "ReactivePeripheralDelegate")
             return
         }
 
@@ -125,7 +134,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		error: Error?
     ) {
         guard let operationId = characteristicDiscovery.complete(key: service.uuid) else {
-            Logger.shared.i("Ignoring didDiscoverCharacteristicsFor \(service.uuid): no discovery in flight for that service", category: "ReactivePeripheralDelegate")
+            Logger.shared.i("Ignoring didDiscoverCharacteristicsFor \(service.uuid) on \(peripheral.identifier.uuidString): no discovery in flight for that service", category: "ReactivePeripheralDelegate")
             return
         }
         
@@ -139,7 +148,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 		didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: Error?
 	) {
         guard let operationId = descriptorDiscovery.complete(key: CharacteristicKey(characteristic)) else {
-            Logger.shared.i("Ignoring didDiscoverDescriptorsFor \(characteristic.uuid): no discovery in flight for that characteristic", category: "ReactivePeripheralDelegate")
+            Logger.shared.i("Ignoring didDiscoverDescriptorsFor \(characteristic.uuid) on \(peripheral.identifier.uuidString): no discovery in flight for that characteristic", category: "ReactivePeripheralDelegate")
             return
         }
         let result = BluetoothOperationResult<(CBCharacteristic, [CBDescriptor]?)>(value: (characteristic, characteristic.descriptors), error: error, id: operationId)
@@ -222,7 +231,7 @@ open class ReactivePeripheralDelegate: NSObject, CBPeripheralDelegate {
 	/// and swallowing "the next reply" instead would hang the retry whenever the abandoned
 	/// request truly never gets answered, which is this hook's documented use case.
 	func cleanupQueueOnError() {
-		Logger.shared.i("Cancelling pending discovery operations on error", category: "ReactivePeripheralDelegate")
+		Logger.shared.i("Cancelling pending discovery operations on error for \(peripheralLabel)", category: "ReactivePeripheralDelegate")
 		failPendingOperations(with: PeripheralError.operationCancelled)
 	}
 

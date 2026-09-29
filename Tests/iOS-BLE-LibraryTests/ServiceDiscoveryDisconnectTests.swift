@@ -119,6 +119,9 @@ final class ServiceDiscoveryDisconnectTests: CentralManagerTestCase {
         }
         assertFailed(result, withCBErrorCode: .peripheralDisconnected)
         XCTAssertTrue(peripheral.peripheralDelegate.serviceDiscovery.isEmpty)
+        XCTAssertEqual(
+            peripheral.peripheralDelegate.peripheralIdentifier, peripheral.peripheral.identifier,
+            "the delegate labels its log lines with the peripheral it is attached to")
     }
 
     func testDisconnectDuringCharacteristicDiscoveryFailsThePendingOperation() async throws {
