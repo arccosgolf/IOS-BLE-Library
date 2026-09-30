@@ -26,6 +26,15 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	let disconnectedPeripheralsSubject = PassthroughSubject<(CBPeripheral, Bool, Error?), Never>()
 	let connectionEventSubject = PassthroughSubject<(CBPeripheral, CBConnectionEvent), Never>()
 	let restoredPeripheralsSubject = PassthroughSubject<[String: Any], Never>()
+	#if !os(macOS)
+	/// Arccos (Wave C3): ANCS authorization changes, see ``CentralManager/ancsAuthorizationChannel``.
+	let ancsAuthorizationSubject = PassthroughSubject<CBPeripheral, Never>()
+	#endif
+
+	/// Arccos (Wave C3): the connects CoreBluetooth holds for this app, see
+	/// ``CentralManager/connectInventory``. Lives on the delegate rather than on
+	/// `CentralManager` because `willRestoreState` is what learns about restored handles.
+	let connectInventory = ConnectInventory()
 
 	// MARK: Restoration Event Buffering
 
@@ -65,12 +74,28 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		connectedPeripheralSubject.send((peripheral, nil))
 	}
 
+	/// The pre-iOS 17 disconnect callback. Ignored.
+	///
+	/// Arccos (Wave C3): this package requires iOS 17 / macOS 14, where CoreBluetooth delivers
+	/// ``centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:)`` instead
+	/// once a delegate implements it. Publishing from both variants produced two disconnect
+	/// events for one disconnect, the second claiming `isReconnecting == false` while the
+	/// first said `true`, and the app's reconnection logic keys on that flag. The method stays
+	/// implemented, as a logged no-op, so that a delivery through this selector can never
+	/// publish a duplicate.
 	open func centralManager(
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
-		Logger.shared.i("LEGACY didDisconnectPeripheral called for \(peripheral.identifier.uuidString), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
-		disconnectedPeripheralsSubject.send((peripheral, false, error))
+		Logger.shared.i("Ignoring legacy didDisconnectPeripheral for \(peripheral.identifier.uuidString): the timestamp/isReconnecting variant publishes the disconnect", category: "ReactiveCentralManagerDelegate")
+	}
+
+	/// The disconnect callback. Arccos (Wave C3): the single disconnect path; every disconnect
+	/// is published exactly once from here and fails the peripheral's pending discovery
+	/// operations once.
+	public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
+		Logger.shared.i("didDisconnectPeripheral for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
+		disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
 		failPendingDiscovery(on: peripheral)
 	}
 
@@ -122,21 +147,17 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 
 	// MARK: Monitoring the Central Manager’s Authorization
 	#if !os(macOS)
-		public func centralManager(
+		/// Arccos (Wave C3): was `fatalError("Unimplemented Method")`. The system calls this for
+		/// any connected peripheral whose ANCS authorization the user changes in Settings, so
+		/// the crash was one Settings toggle away for every user with a connected device.
+		open func centralManager(
 			_ central: CBCentralManager,
 			didUpdateANCSAuthorizationFor peripheral: CBPeripheral
 		) {
-			unimplementedError()
+			Logger.shared.i("ANCS authorization changed for \(peripheral.identifier.uuidString): ancsAuthorized = \(peripheral.ancsAuthorized)", category: "ReactiveCentralManagerDelegate")
+			ancsAuthorizationSubject.send(peripheral)
 		}
 	#endif
-
-	// MARK: Instance Methods
-
-	public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
-		Logger.shared.i("NEW didDisconnectPeripheral called for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
-		disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
-		failPendingDiscovery(on: peripheral)
-	}
 
 	open func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
 		restorationLock.lock()
@@ -145,7 +166,12 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 		Logger.shared.i("willRestoreState called with keys: \(dict.keys.sorted())", category: "ReactiveCentralManagerDelegate")
 
 		if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
-			Logger.shared.i("Restoring \(peripherals.count) peripherals: \(peripherals.map { $0.identifier.uuidString })", category: "ReactiveCentralManagerDelegate")
+			Logger.shared.i("Restoring \(peripherals.count) peripherals: \(peripherals.map { "\($0.identifier.uuidString) (state \($0.state.rawValue))" })", category: "ReactiveCentralManagerDelegate")
+			// Arccos (Wave C3): these are connects an earlier launch issued and the OS still
+			// holds; they belong in the inventory even if the app never re-issues them.
+			for peripheral in peripherals where peripheral.state != .disconnected {
+				connectInventory.record(peripheral, options: nil, origin: .restoration)
+			}
 		}
 
 		if let scanServices = dict[CBCentralManagerRestoredStateScanServicesKey] as? [CBUUID] {

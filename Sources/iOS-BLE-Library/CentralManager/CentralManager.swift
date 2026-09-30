@@ -132,19 +132,23 @@ extension CentralManager {
 	/// - Parameters:
 	///   - peripheral: The peripheral to connect to.
 	///   - options: Optional connection options.
+	///   - keepPendingOnAbandon: What happens to the CoreBluetooth connect request when the
+	///     returned publisher's subscription ends before, or after, the peripheral connects.
+	///     See below. Arccos (Wave C3, CU-868m1mrjy): there is no default on purpose; every
+	///     call site states which contract it relies on.
 	/// - Returns: A publisher that emits the connected peripheral on successful connection.
 	///            The publisher does not finish until the peripheral is successfully connected.
 	///            If the peripheral was disconnected successfully, the publisher finishes without error.
 	///            If the connection was unsuccessful or disconnection returns an error (e.g., peripheral disconnected unexpectedly),
 	///            the publisher finishes with an error.
     ///
-    /// Use ``CentralManager/connect(_:options:)`` to connect to a peripheral.
+    /// Use ``CentralManager/connect(_:options:keepPendingOnAbandon:)`` to connect to a peripheral.
     ///    The returned publisher will emit the connected peripheral or an error if the connection fails.
     ///    The publisher will not complete until the peripheral is disconnected.
     ///    If the connection fails, or the peripheral is unexpectedly disconnected, the publisher will fail with an error.
     ///
     ///    ```swift
-    ///    centralManager.connect(peripheral)
+    ///    centralManager.connect(peripheral, keepPendingOnAbandon: true)
     ///        .sink { completion in
     ///            switch completion {
     ///            case .finished:
@@ -157,9 +161,36 @@ extension CentralManager {
 	///        }
 	///        .store(in: &cancellables)
 	///    ```
-	public func connect(_ peripheral: CBPeripheral, options: [String: Any]? = nil)
-		-> AnyPublisher<CBPeripheral, Error>
-	{
+	///
+	/// ## The abandon policy
+	///
+	/// CoreBluetooth's connect request never times out: once issued it stays pending until the
+	/// peripheral connects, the connect fails, or `cancelPeripheralConnection` is called. The
+	/// publisher only *observes* that request, so the question is what happens to the request
+	/// when the subscription goes away.
+	///
+	/// - `keepPendingOnAbandon: true`: nothing. The request stays pending, or the connection
+	///   stays up, after the subscription is cancelled or ends. This is what a caller that only
+	///   awaits the connect (`firstValue`, or a Combine `timeout` on the connect) needs: taking
+	///   the first value cancels the subscription, and with auto-reconnect the pending request is
+	///   how the OS finishes the job after the caller's own timeout gave up. Use this policy for
+	///   every connect you intend to outlive its publisher, and disconnect through
+	///   ``cancelPeripheralConnection(_:)``. The request is listed in ``connectInventory`` while
+	///   CoreBluetooth holds it.
+	/// - `keepPendingOnAbandon: false`: the subscription owns the connection. When it ends, by
+	///   any route, `cancelPeripheralConnection` is issued, so that afterwards CoreBluetooth
+	///   holds nothing for the peripheral on this publisher's behalf: cancelling the
+	///   subscription while `.connecting` withdraws the pending request, cancelling it after the
+	///   value disconnects the peripheral, and a completion (a connect failure, or a disconnect
+	///   that fails the publisher) withdraws whatever the OS still holds, which under
+	///   auto-reconnect is the armed reconnect. Do not combine this policy with `firstValue`:
+	///   taking the value ends the subscription and disconnects the peripheral it just connected.
+	///
+	/// Before Wave C3 the library never cancelled the request, i.e. every connect behaved as
+	/// `keepPendingOnAbandon: true` without saying so; the app's connect paths relied on that.
+	public func connect(
+		_ peripheral: CBPeripheral, options: [String: Any]? = nil, keepPendingOnAbandon: Bool
+	) -> AnyPublisher<CBPeripheral, Error> {
 		// Identity must be checked BEFORE surfacing the error: `disconnectedPeripheralsChannel`
 		// carries every peripheral's disconnects, and throwing first meant an error-carrying
 		// disconnect from an UNRELATED peripheral failed this peripheral's in-flight connect.
@@ -174,6 +205,19 @@ extension CentralManager {
 			return true
 		})
 
+		// Arccos (Wave C3): with `keepPendingOnAbandon: false` the subscription owns the
+		// connection, so its end, by cancellation or by completion, withdraws whatever
+		// CoreBluetooth still holds. The two routes need two hooks: `autoconnect()` runs the
+		// connectable's cancel only when the last subscriber cancels (on completion it just
+		// releases the connection), and the completion hook never sees a cancellation. A cancel
+		// on a peripheral CoreBluetooth holds nothing for (already `.disconnected`) is a no-op
+		// that produces no callback, so running both for one subscription is harmless.
+		let withdraw: (String) -> Void = { [centralManager] route in
+			Logger.shared.i("Connect subscription for \(peripheral.identifier.uuidString) \(route) (state \(peripheral.state.rawValue)); cancelling the CoreBluetooth connection (keepPendingOnAbandon: false)", category: "CentralManager")
+			centralManager.cancelPeripheralConnection(peripheral)
+		}
+		let onCancel: (() -> Void)? = keepPendingOnAbandon ? nil : { withdraw("was cancelled") }
+
 		return self.connectedPeripheralChannel
 			.filter { $0.0.identifier == peripheral.identifier }
 			.tryMap { p in
@@ -184,9 +228,17 @@ extension CentralManager {
 				return p.0
 			}
 			.prefix(untilUntilOutputOrCompletion: killSwitch)
-			.bluetooth {
+			.handleEvents(receiveCompletion: { completion in
+				guard !keepPendingOnAbandon else { return }
+				withdraw("completed (\(completion))")
+			})
+			.bluetooth({
+				self.centralManagerDelegate.connectInventory.record(
+					peripheral, options: options,
+					origin: .connect(keepPendingOnAbandon: keepPendingOnAbandon))
 				self.centralManager.connect(peripheral, options: options)
-			}
+				Logger.shared.i("Issued connect for \(peripheral.identifier.uuidString) (keepPendingOnAbandon: \(keepPendingOnAbandon)); CoreBluetooth now holds \(self.connectInventory.count) connect(s) for this app", category: "CentralManager")
+			}, onCancel: onCancel)
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -286,9 +338,17 @@ extension CentralManager {
 				self?.stopScan()
 				return e
 			}
-			.bluetooth {
+			.bluetooth({
 				self.centralManager.scanForPeripherals(withServices: services, options: options)
-			}
+			}, onCancel: { [centralManager] in
+				// Arccos (Wave C3): a scan nobody is subscribed to would run the radio until the
+				// next `stopScan()`. Runs when the last subscriber cancels (a cancelled sink or
+				// task, or `firstValue` taking its value); the completion routes (`stopScan()`,
+				// a state error) have already stopped the radio themselves. Stops CoreBluetooth
+				// directly rather than through `stopScan()`, whose kill switch would finish
+				// every other scan publisher too.
+				centralManager.stopScan()
+			})
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -339,6 +399,41 @@ extension CentralManager {
 	public var restoredPeripheralsChannel: AnyPublisher<[String: Any], Never> {
 		centralManagerDelegate.restoredPeripheralsSubject
 			.eraseToAnyPublisher()
+	}
+
+	#if !os(macOS)
+	/// Arccos (Wave C3): a publisher that emits a peripheral whenever its ANCS (Apple
+	/// Notification Center Service) authorization changes; read `ancsAuthorized` on it. The
+	/// system reports this for any connected peripheral the user toggles in Settings, not only
+	/// ones connected with `CBConnectPeripheralOptionRequiresANCS`. Before Wave C3 the delegate
+	/// method behind this channel was a `fatalError`.
+	public var ancsAuthorizationChannel: AnyPublisher<CBPeripheral, Never> {
+		centralManagerDelegate.ancsAuthorizationSubject
+			.eraseToAnyPublisher()
+	}
+	#endif
+}
+
+// MARK: - Connect inventory (Arccos, Wave C3)
+
+extension CentralManager {
+	/// Every peripheral CoreBluetooth currently holds a connection, or a pending connect, for
+	/// on this app's behalf, as far as this library can know: connects issued through
+	/// ``connect(_:options:keepPendingOnAbandon:)`` in this process, plus handles state
+	/// restoration handed back `.connecting` or `.connected`. Each record's ``ConnectRecord/state``
+	/// is read from the handle when you call this, so `.connecting` is "pending right now".
+	///
+	/// Not included: connects issued directly on ``centralManager`` (the raw `CBCentralManager`),
+	/// and connects whose `CBPeripheral` was released by everyone, which CoreBluetooth cancels
+	/// on its own. Ordered by issue time.
+	public var connectInventory: [ConnectRecord] {
+		centralManagerDelegate.connectInventory.live
+	}
+
+	/// The subset of ``connectInventory`` CoreBluetooth has not connected yet: "what connects
+	/// does iOS hold for us right now".
+	public var pendingConnects: [ConnectRecord] {
+		connectInventory.filter { $0.state == .connecting }
 	}
 }
 

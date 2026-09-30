@@ -192,6 +192,20 @@ public class Peripheral {
 		}
 		lanes.enqueue(operation)
 	}
+
+	/// Arccos (Wave C3): a discovery publisher's subscription was cancelled. If its request is
+	/// still queued behind another one in its lane it is withdrawn, so a request nobody is
+	/// waiting for is never issued to CoreBluetooth. A request already in flight cannot be
+	/// withdrawn (CoreBluetooth offers no cancel); it is left in place so its reply is
+	/// attributed to it and the lane advances. A cancellation that follows the reply (for
+	/// example `firstValue` taking its value) finds the operation already gone and is a no-op.
+	private func withdrawIfQueued<Key: Hashable>(
+		_ id: UUID, from lanes: DiscoveryLanes<Key>, _ name: String
+	) {
+		if lanes.removeIfQueued(id: id) {
+			Logger.shared.i("Withdrew queued \(name) \(id) for \(peripheral.identifier.uuidString): its subscription ended before it was issued", category: "Peripheral")
+		}
+	}
 }
 
 // MARK: - API
@@ -259,7 +273,7 @@ extension Peripheral {
                 })
             }
             .first()
-            .bluetooth {
+            .bluetooth({
                 let operation = DiscoveryLanes<SingleLane>.Operation(
                     id: operationID,
                     key: SingleLane(),
@@ -272,7 +286,9 @@ extension Peripheral {
                             BluetoothOperationResult(value: nil, error: error, id: operationID))
                     })
                 self.enqueueIfConnected(operation, on: self.peripheralDelegate.serviceDiscovery)
-            }
+            }, onCancel: {
+                self.withdrawIfQueued(operationID, from: self.peripheralDelegate.serviceDiscovery, "discoverServices")
+            })
             .autoconnect()
             .eraseToAnyPublisher()
     }
@@ -317,7 +333,7 @@ extension Peripheral {
 			}
             .first()
 
-		return allCharacteristics.bluetooth {
+		return allCharacteristics.bluetooth({
             let operation = DiscoveryLanes<CBUUID>.Operation(
                 id: id,
                 key: service.uuid,
@@ -329,7 +345,9 @@ extension Peripheral {
                         BluetoothOperationResult(value: (service, nil), error: error, id: id))
                 })
             self.enqueueIfConnected(operation, on: self.peripheralDelegate.characteristicDiscovery)
-        }
+        }, onCancel: {
+            self.withdrawIfQueued(id, from: self.peripheralDelegate.characteristicDiscovery, "discoverCharacteristics")
+        })
         .autoconnect()
         .eraseToAnyPublisher()
 	}
@@ -356,7 +374,7 @@ extension Peripheral {
 				}
 			}
             .first()
-			.bluetooth {
+			.bluetooth({
                 let operation = DiscoveryLanes<ReactivePeripheralDelegate.CharacteristicKey>.Operation(
                     id: id,
                     key: ReactivePeripheralDelegate.CharacteristicKey(characteristic),
@@ -368,7 +386,9 @@ extension Peripheral {
                             BluetoothOperationResult(value: (characteristic, nil), error: error, id: id))
                     })
                 self.enqueueIfConnected(operation, on: self.peripheralDelegate.descriptorDiscovery)
-            }
+            }, onCancel: {
+                self.withdrawIfQueued(id, from: self.peripheralDelegate.descriptorDiscovery, "discoverDescriptors")
+            })
             .autoconnect()
             .eraseToAnyPublisher()
 	}

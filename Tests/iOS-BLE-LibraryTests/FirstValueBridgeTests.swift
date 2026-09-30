@@ -185,7 +185,7 @@ final class FirstValueLibraryPathTests: CentralManagerTestCase {
         let central = try makeCentral(peripherals: [link])
         let peripheral = try await discover(link, on: central)
 
-        let connect = Task { try await central.connect(peripheral, options: options).firstValue }
+        let connect = Task { try await central.connect(peripheral, options: options, keepPendingOnAbandon: true).firstValue }
         try await waitUntil(2, "connect issued") { peripheral.state == .connecting }
 
         let cancelled = try await withTimeout(2, "cancel while connecting") {
@@ -203,9 +203,6 @@ final class FirstValueLibraryPathTests: CentralManagerTestCase {
     }
 
     func testConnectCancelledWhileConnectingUnderAutoReconnectThrowsInsteadOfHanging() async throws {
-        guard #available(iOS 17.0, macOS 14.0, tvOS 17.0, watchOS 10.0, *) else {
-            throw XCTSkip("auto-reconnect needs iOS 17 / macOS 14")
-        }
         // The app connects Links with auto-reconnect; cancelling drops that too and reports
         // the same error-free disconnect.
         try await assertCancelledConnectThrows(

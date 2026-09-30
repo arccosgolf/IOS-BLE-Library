@@ -100,7 +100,7 @@ final class ConnectKillSwitchTests: XCTestCase {
 
         // Connect B and keep it connected.
         let bConnected = XCTestExpectation(description: "B connected")
-        central.connect(b)
+        central.connect(b, keepPendingOnAbandon: true)
             .sink(receiveCompletion: { _ in }, receiveValue: { _ in bConnected.fulfill() })
             .store(in: &cancelables)
         await fulfillment(of: [bConnected], timeout: 5)
@@ -110,7 +110,7 @@ final class ConnectKillSwitchTests: XCTestCase {
         let aCompleted = XCTestExpectation(
             description: "A's connect publisher must stay alive after B's error disconnect")
         aCompleted.isInverted = true
-        central.connect(a)
+        central.connect(a, keepPendingOnAbandon: true)
             .sink(receiveCompletion: { _ in
                 // Any completion (failure OR finished) while A is still connected is the bug.
                 aCompleted.fulfill()
@@ -144,7 +144,7 @@ final class ConnectKillSwitchTests: XCTestCase {
         let aConnected = XCTestExpectation(description: "A connected")
         let aCompleted = XCTestExpectation(
             description: "A's connect publisher completes on A's own error disconnect")
-        central.connect(a)
+        central.connect(a, keepPendingOnAbandon: true)
             .sink(receiveCompletion: { completion in
                 switch completion {
                 case .finished:
