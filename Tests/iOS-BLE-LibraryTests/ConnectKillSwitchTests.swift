@@ -95,12 +95,22 @@ final class ConnectKillSwitchTests: XCTestCase {
     }
 
     func testConnectSurvivesOtherPeripheralsErrorDisconnect() async throws {
+        try await assertConnectSurvivesOtherPeripheralsErrorDisconnect(keepPendingOnAbandon: true)
+    }
+
+    /// Wave C3: with `keepPendingOnAbandon: false` a completion also withdraws the connection,
+    /// so the identity guard is what keeps B's error from disconnecting A.
+    func testConnectWithCancellingPolicySurvivesOtherPeripheralsErrorDisconnect() async throws {
+        try await assertConnectSurvivesOtherPeripheralsErrorDisconnect(keepPendingOnAbandon: false)
+    }
+
+    private func assertConnectSurvivesOtherPeripheralsErrorDisconnect(keepPendingOnAbandon: Bool) async throws {
         let a = try await discover(service: .serviceA)
         let b = try await discover(service: .serviceB)
 
         // Connect B and keep it connected.
         let bConnected = XCTestExpectation(description: "B connected")
-        central.connect(b)
+        central.connect(b, keepPendingOnAbandon: true)
             .sink(receiveCompletion: { _ in }, receiveValue: { _ in bConnected.fulfill() })
             .store(in: &cancelables)
         await fulfillment(of: [bConnected], timeout: 5)
@@ -110,7 +120,7 @@ final class ConnectKillSwitchTests: XCTestCase {
         let aCompleted = XCTestExpectation(
             description: "A's connect publisher must stay alive after B's error disconnect")
         aCompleted.isInverted = true
-        central.connect(a)
+        central.connect(a, keepPendingOnAbandon: keepPendingOnAbandon)
             .sink(receiveCompletion: { _ in
                 // Any completion (failure OR finished) while A is still connected is the bug.
                 aCompleted.fulfill()
@@ -144,7 +154,7 @@ final class ConnectKillSwitchTests: XCTestCase {
         let aConnected = XCTestExpectation(description: "A connected")
         let aCompleted = XCTestExpectation(
             description: "A's connect publisher completes on A's own error disconnect")
-        central.connect(a)
+        central.connect(a, keepPendingOnAbandon: true)
             .sink(receiveCompletion: { completion in
                 switch completion {
                 case .finished:

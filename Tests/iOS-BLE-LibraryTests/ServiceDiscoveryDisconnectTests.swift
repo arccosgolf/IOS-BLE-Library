@@ -266,9 +266,6 @@ final class ServiceDiscoveryDisconnectTests: CentralManagerTestCase {
     // MARK: Disconnects that never read .disconnected (review finding 3)
 
     func testDisconnectUnderAutoReconnectFailsThePendingOperation() async throws {
-        guard #available(iOS 17.0, macOS 14.0, tvOS 17.0, watchOS 10.0, *) else {
-            throw XCTSkip("auto-reconnect needs iOS 17 / macOS 14")
-        }
         let link = makeSlowLink()
         let central = try makeCentral(peripherals: [link])
         let (peripheral, discovery) = try await startSlowServiceDiscovery(

@@ -10,7 +10,8 @@
 //  - `connectionInterval` scales the mock's service-discovery latency
 //    (`interval × number of services`), which is how a test opens a window to
 //    disconnect *during* discovery;
-//  - the `*DiscoveryResult` fields fail a discovery from the peripheral side;
+//  - `connectionResult` fails a connect from the peripheral side (`didFailToConnect`), the
+//    `*DiscoveryResult` fields fail a discovery;
 //  - `onServiceDiscoveryRequest` fires synchronously when the mock receives the
 //    request, so a test can act at exactly that moment, and the request counters make
 //    ordering assertable;
@@ -33,6 +34,9 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     let initiallyConnected: Bool
     private let requestedIdentifier: UUID
 
+    /// What the mock answers a connect request with; a failure is delivered as
+    /// `didFailToConnect` after `connectionInterval`, with the peripheral back at `.disconnected`.
+    var connectionResult: Result<Void, Error> = .success(())
     var serviceDiscoveryResult: Result<Void, Error> = .success(())
     var characteristicDiscoveryResult: Result<Void, Error> = .success(())
     var descriptorDiscoveryResult: Result<Void, Error> = .success(())
@@ -130,6 +134,10 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     }
 
     // MARK: CBMPeripheralSpecDelegate
+
+    func peripheralDidReceiveConnectionRequest(_ peripheral: CBMPeripheralSpec) -> Result<Void, Error> {
+        connectionResult
+    }
 
     func peripheral(
         _ peripheral: CBMPeripheralSpec,

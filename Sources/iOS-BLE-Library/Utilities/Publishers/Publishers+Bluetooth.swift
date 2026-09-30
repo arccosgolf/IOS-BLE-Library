@@ -9,10 +9,22 @@ import Combine
 import Foundation
 
 extension Publisher {
-	func bluetooth(_ fire: @escaping () -> Void)
+	/// Wraps this publisher in a ``Publishers/BluetoothPublisher``.
+	///
+	/// - Parameters:
+	///   - fire: Issues the CoreBluetooth request. Runs once, when the publisher is connected
+	///     (with `autoconnect()`, when the first subscriber arrives).
+	///   - onCancel: Arccos (Wave C3): undoes the request's side effect, if CoreBluetooth offers
+	///     a way to. Runs once, when the connection is cancelled. Under `autoconnect()` that is
+	///     when the last subscriber cancels, which includes `firstValue` taking its value and a
+	///     cancelled `for await` task; it does **not** run when the upstream completes, because
+	///     `Autoconnect` then releases the connection without cancelling it. Leave it `nil` when
+	///     the request has no revocable side effect, or when revoking it is the caller's decision
+	///     (see ``CentralManager/connect(_:options:keepPendingOnAbandon:)``).
+	func bluetooth(_ fire: @escaping () -> Void, onCancel: (() -> Void)? = nil)
 		-> Publishers.BluetoothPublisher<Output, Failure>
 	{
-		Publishers.BluetoothPublisher<Output, Failure>(self, fire: fire)
+		Publishers.BluetoothPublisher<Output, Failure>(self, fire: fire, onCancel: onCancel)
 	}
 }
 
@@ -42,9 +54,9 @@ extension Publishers {
 		private let inner: BaseConnectable<Output, Failure>
 
 		init<PublisherType: Publisher>(
-			_ publisher: PublisherType, fire: @escaping () -> Void
+			_ publisher: PublisherType, fire: @escaping () -> Void, onCancel: (() -> Void)? = nil
 		) where Output == PublisherType.Output, Failure == PublisherType.Failure {
-			self.inner = ClosureConnectablePublisher(upstream: publisher, fire: fire)
+			self.inner = ClosureConnectablePublisher(upstream: publisher, fire: fire, onCancel: onCancel)
 		}
 
 		public func receive<S>(subscriber: S)

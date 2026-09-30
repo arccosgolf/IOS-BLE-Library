@@ -1,12 +1,16 @@
-// swift-tools-version:5.6
+// swift-tools-version:5.9
 import PackageDescription
 
 let package = Package(
     name: "IOSBLELibrary",
+    // Arccos (Wave C3): the app's deployment target is iOS 17, and the fork's connect and
+    // disconnect contracts are written against iOS 17 CoreBluetooth (auto-reconnect, the
+    // timestamp/isReconnecting disconnect callback). macOS 14 / watchOS 10 are the matching
+    // releases. Upstream: iOS 13 / macOS 10.15 / watchOS 6.
     platforms: [
-        .iOS(.v13),
-        .macOS(.v10_15),
-        .watchOS(.v6)
+        .iOS(.v17),
+        .macOS(.v14),
+        .watchOS(.v10)
     ],
     products: [
         .library(name: "IOSBLELibrary", targets: ["IOSBLELibrary"]),

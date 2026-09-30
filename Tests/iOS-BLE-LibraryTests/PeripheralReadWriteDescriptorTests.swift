@@ -147,7 +147,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
     
     func testReadCharacteristic() async throws {
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: ReactivePeripheralDelegate()) }
             .firstValue
         
@@ -178,7 +178,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
         let delegate = ReactivePeripheralDelegate()
         
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: delegate) }
             .firstValue
         
@@ -205,7 +205,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
         let delegate = ReactivePeripheralDelegate()
         
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: delegate) }
             .firstValue
         
@@ -235,7 +235,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
         let delegate = ReactivePeripheralDelegate()
         
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: delegate) }
             .firstValue
         
@@ -267,7 +267,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
         let delegate = ReactivePeripheralDelegate()
         
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: delegate) }
             .firstValue
         
@@ -300,7 +300,7 @@ final class PeripheralReadWriteDescriptorTests: XCTestCase {
         let delegate = ReactivePeripheralDelegate()
         
         let p = try await central.scanForPeripherals(withServices: nil)
-            .flatMap { self.central.connect($0.peripheral) }
+            .flatMap { self.central.connect($0.peripheral, keepPendingOnAbandon: true) }
             .map { Peripheral(peripheral: $0, delegate: delegate) }
             .firstValue
         

@@ -97,8 +97,9 @@ class CentralManagerTestCase: XCTestCase {
 
     /// Issues `connect()` and returns once the central reports the peripheral connected.
     ///
-    /// Only the first value is awaited; the OS-level connection stays up afterwards
-    /// (nothing in the fork cancels it when the publisher goes away, see finding i3).
+    /// Only the first value is awaited, so the subscription ends the moment the peripheral
+    /// connects; `keepPendingOnAbandon: true` is what keeps the OS-level connection up
+    /// afterwards (Wave C3). This is the app's own connect shape.
     func connect(
         _ peripheral: CBPeripheral,
         on central: CentralManager,
@@ -107,7 +108,7 @@ class CentralManagerTestCase: XCTestCase {
     ) async throws {
         try await waitForPowerOn(central)
         try await withTimeout(timeout, "connect \(peripheral.identifier)") {
-            _ = try await central.connect(peripheral, options: options).firstValue
+            _ = try await central.connect(peripheral, options: options, keepPendingOnAbandon: true).firstValue
         }
     }
 

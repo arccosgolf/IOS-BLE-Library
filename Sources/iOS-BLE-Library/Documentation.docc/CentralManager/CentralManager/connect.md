@@ -1,4 +1,4 @@
-# ``iOS_BLE_Library/CentralManager/connect(_:options:)``
+# ``iOS_BLE_Library/CentralManager/connect(_:options:keepPendingOnAbandon:)``
 
 ## See Also
 
