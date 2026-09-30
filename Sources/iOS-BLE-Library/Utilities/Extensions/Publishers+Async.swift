@@ -40,7 +40,9 @@ extension Publisher {
 	/// Subscribes on first access, returns the first emitted value and cancels the
 	/// subscription. Throws the publisher's failure, or ``FirstValueError/finishedWithoutValue``
 	/// if the publisher finishes without emitting. A publisher that never completes keeps this
-	/// suspended, so bound it (Combine's `timeout` fails the publisher, which resumes the await).
+	/// suspended, so bound it with Combine's `timeout(_:scheduler:options:customError:)` and pass
+	/// `customError`: without one, `timeout` finishes the publisher and this throws
+	/// ``FirstValueError/finishedWithoutValue``, indistinguishable from an empty completion.
 	public var firstValue: Output {
 		get async throws {
 			try await ContinuationSubscriber<Self>.withCheckedContinuation(self)

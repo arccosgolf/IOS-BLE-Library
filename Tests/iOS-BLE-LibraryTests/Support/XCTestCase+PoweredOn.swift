@@ -21,14 +21,21 @@ import XCTest
 
 extension XCTestCase {
     /// Blocks until `central` reports `.poweredOn`, pumping the main run loop so the mock can
-    /// deliver the state change. Records a test failure if it does not arrive within `timeout`.
-    func waitUntilPoweredOn(_ central: CentralManager, timeout: TimeInterval = 2) {
+    /// deliver the state change.
+    ///
+    /// - Throws: ``TimeoutError`` if `.poweredOn` does not arrive within `timeout`. Call it with
+    ///   `try` from `setUpWithError`, so a wedged mock fails the test in setUp instead of letting
+    ///   it enter the unbounded scan in the test body and burn the CI per-test allowance.
+    func waitUntilPoweredOn(_ central: CentralManager, timeout: TimeInterval = 2) throws {
         let poweredOn = XCTestExpectation(description: "central powered on")
         let subscription = central.stateChannel
             .filter { $0 == .poweredOn }
             .first()
             .sink { _ in poweredOn.fulfill() }
-        wait(for: [poweredOn], timeout: timeout)
+        let result = XCTWaiter.wait(for: [poweredOn], timeout: timeout)
         subscription.cancel()
+        guard result == .completed else {
+            throw TimeoutError(seconds: timeout, label: "central power on")
+        }
     }
 }
