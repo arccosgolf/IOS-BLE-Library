@@ -107,18 +107,23 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 	///
 	/// Arccos (Wave C3): CoreBluetooth may deliver a disconnect through this selector, through
 	/// the timestamp/isReconnecting one, or through both for the same event; which one is not
-	/// documented and was observed to differ between the simulator's CoreBluetoothMock (the
-	/// new one only) and a device (this one). Both therefore publish, through
+	/// documented and differs between CoreBluetoothMock (the new one only) and the devices seen
+	/// so far (this one only; device log 2026-09-30). Both therefore publish, through
 	/// ``peripheralDidDisconnect(_:isReconnecting:error:variant:)``, which drops the second
-	/// delivery of one event. `isReconnecting` is not a parameter here; it is read from the
-	/// handle, which CoreBluetooth already holds at `.connecting` when auto-reconnect is armed
-	/// (the same signal the app's stuck-connecting detection relies on).
+	/// delivery of one event.
+	///
+	/// `isReconnecting` is not a parameter here and is reported as `false`, as it always was
+	/// on this path. The handle's state at this moment (`.connecting` when CoreBluetooth has
+	/// armed an auto-reconnect) would be the truthful value, but on devices that only use this
+	/// selector the app has only ever received `false`, and its reconnection policy branches
+	/// on the flag; switching it is a behaviour change to make on its own, with the handle
+	/// state this method logs as the evidence.
 	open func centralManager(
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
-		peripheralDidDisconnect(
-			peripheral, isReconnecting: peripheral.state == .connecting, error: error, variant: .legacy)
+		Logger.shared.i("Legacy didDisconnectPeripheral for \(peripheral.identifier.uuidString): handle state \(peripheral.state.rawValue) (1 = connecting, i.e. auto-reconnect armed)", category: "ReactiveCentralManagerDelegate")
+		peripheralDidDisconnect(peripheral, isReconnecting: false, error: error, variant: .legacy)
 	}
 
 	/// The iOS 17 / macOS 14 disconnect selector. See the legacy one above.

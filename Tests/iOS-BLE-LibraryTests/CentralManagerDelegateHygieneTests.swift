@@ -5,7 +5,7 @@
 //  delegate selectors used to publish independently, so one disconnect could surface twice
 //  with contradictory `isReconnecting` values; and the ANCS authorization callback was a
 //  `fatalError`. CoreBluetooth is not consistent about which selector it uses (the mock calls
-//  the timestamp one, a device was seen calling the legacy one), so neither may be ignored:
+//  the timestamp one; a device, per its 2026-09-30 log, called only the legacy one), so neither may be ignored:
 //  whichever arrives first publishes, the other's delivery of the same event is dropped.
 //  These tests drive the delegate methods directly to reproduce every ordering.
 //
@@ -56,9 +56,10 @@ final class CentralManagerDelegateHygieneTests: CentralManagerTestCase {
         XCTAssertEqual((disconnects.values.first?.2 as? CBMError)?.code, .peripheralDisconnected)
     }
 
-    func testLegacyVariantAlonePublishesWithReconnectFlagFromTheHandle() async throws {
-        // A device that delivers only the legacy selector must still see its disconnects.
-        // The legacy selector carries no isReconnecting; it comes from the handle's state.
+    func testLegacyVariantAlonePublishesWithIsReconnectingFalse() async throws {
+        // A device that delivers only the legacy selector must still see its disconnects
+        // (device log 2026-09-30: this is the only selector iOS used). The legacy selector
+        // carries no isReconnecting; it is reported as `false`, as it always was on this path.
         let link = makeLink()
         let central = try makeCentral(peripherals: [link])
         let peripheral = try await discover(link, on: central)
@@ -69,7 +70,7 @@ final class CentralManagerDelegateHygieneTests: CentralManagerTestCase {
         try await settle()
 
         XCTAssertEqual(disconnects.count, 1, "the legacy selector must publish when it is the only delivery")
-        XCTAssertEqual(disconnects.values.first?.1, false, "a `.disconnected` handle is not reconnecting")
+        XCTAssertEqual(disconnects.values.first?.1, false, "the legacy selector reports `false`, as before Wave C3")
         XCTAssertEqual((disconnects.values.first?.2 as? CBMError)?.code, .peripheralDisconnected)
     }
 
