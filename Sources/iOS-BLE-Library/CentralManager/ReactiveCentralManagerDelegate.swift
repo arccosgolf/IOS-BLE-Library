@@ -71,30 +71,86 @@ open class ReactiveCentralManagerDelegate: NSObject, CBCentralManagerDelegate {
 
 	// MARK: Monitoring Connections with Peripherals
 	open func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+		disconnectDeliveryLock.lock()
+		lastDisconnectDelivery[peripheral.identifier] = nil
+		disconnectDeliveryLock.unlock()
 		connectedPeripheralSubject.send((peripheral, nil))
 	}
 
-	/// The pre-iOS 17 disconnect callback. Ignored.
+	// MARK: Disconnects: two selectors, one event (Arccos, Wave C3)
+
+	/// Which delegate selector delivered a disconnect.
+	enum DisconnectVariant: Equatable {
+		/// `centralManager(_:didDisconnectPeripheral:error:)`
+		case legacy
+		/// `centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:)`
+		case timestamp
+	}
+
+	private struct DisconnectDelivery {
+		let variant: DisconnectVariant
+		let at: Date
+		/// Error identity (domain and code), or `nil` for an error-free disconnect.
+		let errorKey: String?
+	}
+
+	private let disconnectDeliveryLock = NSLock()
+	private var lastDisconnectDelivery: [UUID: DisconnectDelivery] = [:]
+
+	/// How long after one selector delivered a disconnect the *other* selector's delivery of
+	/// the same error for the same peripheral counts as the same event. Internal so tests can
+	/// shorten it; the deliveries CoreBluetooth pairs up arrive within the same run of the
+	/// delegate queue.
+	var duplicateDisconnectWindow: TimeInterval = 1.0
+
+	/// The pre-iOS 17 disconnect selector.
 	///
-	/// Arccos (Wave C3): this package requires iOS 17 / macOS 14, where CoreBluetooth delivers
-	/// ``centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:)`` instead
-	/// once a delegate implements it. Publishing from both variants produced two disconnect
-	/// events for one disconnect, the second claiming `isReconnecting == false` while the
-	/// first said `true`, and the app's reconnection logic keys on that flag. The method stays
-	/// implemented, as a logged no-op, so that a delivery through this selector can never
-	/// publish a duplicate.
+	/// Arccos (Wave C3): CoreBluetooth may deliver a disconnect through this selector, through
+	/// the timestamp/isReconnecting one, or through both for the same event; which one is not
+	/// documented and was observed to differ between the simulator's CoreBluetoothMock (the
+	/// new one only) and a device (this one). Both therefore publish, through
+	/// ``peripheralDidDisconnect(_:isReconnecting:error:variant:)``, which drops the second
+	/// delivery of one event. `isReconnecting` is not a parameter here; it is read from the
+	/// handle, which CoreBluetooth already holds at `.connecting` when auto-reconnect is armed
+	/// (the same signal the app's stuck-connecting detection relies on).
 	open func centralManager(
 		_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
 		error: Error?
 	) {
-		Logger.shared.i("Ignoring legacy didDisconnectPeripheral for \(peripheral.identifier.uuidString): the timestamp/isReconnecting variant publishes the disconnect", category: "ReactiveCentralManagerDelegate")
+		peripheralDidDisconnect(
+			peripheral, isReconnecting: peripheral.state == .connecting, error: error, variant: .legacy)
 	}
 
-	/// The disconnect callback. Arccos (Wave C3): the single disconnect path; every disconnect
-	/// is published exactly once from here and fails the peripheral's pending discovery
-	/// operations once.
+	/// The iOS 17 / macOS 14 disconnect selector. See the legacy one above.
 	public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?) {
-		Logger.shared.i("didDisconnectPeripheral for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
+		peripheralDidDisconnect(peripheral, isReconnecting: isReconnecting, error: error, variant: .timestamp)
+	}
+
+	/// Arccos (Wave C3): the single disconnect path. Whichever selector delivers first
+	/// publishes and fails the peripheral's pending discovery; a delivery through the *other*
+	/// selector, for the same peripheral and the same error, within ``duplicateDisconnectWindow``
+	/// and with no connect in between, is the same event and is dropped. A repeat through the
+	/// same selector, or with a different error (a cancel of the armed reconnect reports
+	/// `nil` after the link-loss error), is a new event and publishes.
+	func peripheralDidDisconnect(
+		_ peripheral: CBPeripheral, isReconnecting: Bool, error: Error?, variant: DisconnectVariant
+	) {
+		let errorKey = error.map { "\(($0 as NSError).domain)#\(($0 as NSError).code)" }
+		let now = Date()
+
+		disconnectDeliveryLock.lock()
+		if let last = lastDisconnectDelivery[peripheral.identifier],
+		   last.variant != variant,
+		   last.errorKey == errorKey,
+		   now.timeIntervalSince(last.at) < duplicateDisconnectWindow {
+			disconnectDeliveryLock.unlock()
+			Logger.shared.i("Dropping duplicate didDisconnectPeripheral (\(variant)) for \(peripheral.identifier.uuidString): the \(last.variant) selector already published this disconnect", category: "ReactiveCentralManagerDelegate")
+			return
+		}
+		lastDisconnectDelivery[peripheral.identifier] = DisconnectDelivery(variant: variant, at: now, errorKey: errorKey)
+		disconnectDeliveryLock.unlock()
+
+		Logger.shared.i("didDisconnectPeripheral (\(variant)) for \(peripheral.identifier.uuidString), isReconnecting: \(isReconnecting), error: \(error?.localizedDescription ?? "nil")", category: "ReactiveCentralManagerDelegate")
 		disconnectedPeripheralsSubject.send((peripheral, isReconnecting, error))
 		failPendingDiscovery(on: peripheral)
 	}
