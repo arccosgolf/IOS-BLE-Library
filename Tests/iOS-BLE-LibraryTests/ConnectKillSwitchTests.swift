@@ -69,6 +69,8 @@ final class ConnectKillSwitchTests: XCTestCase {
         let cmd = ReactiveCentralManagerDelegate()
         let cm = CBCentralManagerFactory.instance(delegate: cmd, queue: .main, forceMock: true)
         central = try CentralManager(centralManager: cm)
+        // Arccos: the scan in each test is issued on subscribe; wait for the mock to power on first.
+        try waitUntilPoweredOn(central)
 
         cancelables = Set()
     }

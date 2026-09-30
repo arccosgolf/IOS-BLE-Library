@@ -15,7 +15,34 @@ extension Publisher where Failure == Never {
 	}
 }
 
+/// Arccos (Wave C2): errors raised by ``Publisher/firstValue`` itself, as opposed to errors
+/// forwarded from the publisher.
+public enum FirstValueError: LocalizedError, Equatable {
+	/// The publisher finished without emitting a value, so there is no first value to return.
+	///
+	/// Reachable from ``CentralManager/connect(_:options:)`` when the peripheral is disconnected
+	/// (with no error) before it connects, and from ``CentralManager/scanForPeripherals(withServices:options:)``
+	/// when ``CentralManager/stopScan()`` ends the scan before a match. Before Wave C2 an empty
+	/// completion left the awaiting task suspended forever.
+	case finishedWithoutValue
+
+	public var errorDescription: String? {
+		switch self {
+		case .finishedWithoutValue:
+			return "The publisher finished without emitting a value."
+		}
+	}
+}
+
 extension Publisher {
+	/// The publisher's first value, bridged into async/await.
+	///
+	/// Subscribes on first access, returns the first emitted value and cancels the
+	/// subscription. Throws the publisher's failure, or ``FirstValueError/finishedWithoutValue``
+	/// if the publisher finishes without emitting. A publisher that never completes keeps this
+	/// suspended, so bound it with Combine's `timeout(_:scheduler:options:customError:)` and pass
+	/// `customError`: without one, `timeout` finishes the publisher and this throws
+	/// ``FirstValueError/finishedWithoutValue``, indistinguishable from an empty completion.
 	public var firstValue: Output {
 		get async throws {
 			try await ContinuationSubscriber<Self>.withCheckedContinuation(self)
