@@ -66,7 +66,7 @@ centralManager.connectedPeripheralChannel
 
 ### Connection
 
-- ``connect(_:options:)``
+- ``connect(_:options:keepPendingOnAbandon:)``
 - ``cancelPeripheralConnection(_:)``
 - ``retrieveConnectedPeripherals(withServices:)``
 

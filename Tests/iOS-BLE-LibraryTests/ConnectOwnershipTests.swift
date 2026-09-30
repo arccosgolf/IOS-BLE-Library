@@ -184,6 +184,55 @@ final class ConnectOwnershipTests: CentralManagerTestCase {
         XCTAssertEqual(peripheral.state, .disconnected)
     }
 
+    // MARK: Connect failure (didFailToConnect) under both policies
+
+    /// Issues a connect that the mock refuses, waits for the publisher to fail with the mock's
+    /// error, and returns the disconnect events the central published meanwhile.
+    private func assertConnectFailure(keepPendingOnAbandon: Bool) async throws -> (CBPeripheral, EventBox<Bool>) {
+        let link = makeLink(connectionInterval: 0.2)
+        link.connectionResult = .failure(CBMError(.connectionFailed))
+        let central = try makeCentral(peripherals: [link])
+        let peripheral = try await discover(link, on: central)
+        try await waitForPowerOn(central)
+
+        let disconnects = EventBox<Bool>()
+        central.disconnectedPeripheralsChannel
+            .filter { $0.0.identifier == peripheral.identifier }
+            .sink { disconnects.append($0.1) }
+            .store(in: &cancellables)
+
+        let failed = XCTestExpectation(description: "connect publisher failed")
+        central.connect(peripheral, keepPendingOnAbandon: keepPendingOnAbandon)
+            .sink(receiveCompletion: { completion in
+                guard case .failure(let error) = completion else {
+                    return XCTFail("a refused connect must fail the publisher, got \(completion)")
+                }
+                XCTAssertEqual((error as? CBMError)?.code, .connectionFailed, "the mock's error must surface verbatim, got \(error)")
+                failed.fulfill()
+            }, receiveValue: { _ in XCTFail("a refused connect must not emit a peripheral") })
+            .store(in: &cancellables)
+        await fulfillment(of: [failed], timeout: 2)
+
+        XCTAssertEqual(peripheral.state, .disconnected)
+        XCTAssertTrue(central.connectInventory.isEmpty, "a failed connect is not something CoreBluetooth holds")
+        return (peripheral, disconnects)
+    }
+
+    func testKeepPendingConnectFailureFailsThePublisherAndLeavesNothingPending() async throws {
+        let (_, disconnects) = try await assertConnectFailure(keepPendingOnAbandon: true)
+        // `didFailToConnect` is not a disconnect; nothing else may be published for it.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(disconnects.isEmpty, "a connect failure must not be reported as a disconnect")
+    }
+
+    func testCancellingPolicyConnectFailureWithdrawsNothingAndPublishesNoDisconnect() async throws {
+        // The completion hook runs `cancelPeripheralConnection` on a handle CoreBluetooth already
+        // holds nothing for; that must be a silent no-op, not a second event.
+        let (_, disconnects) = try await assertConnectFailure(keepPendingOnAbandon: false)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(disconnects.isEmpty, "the withdrawal after a failed connect must produce no disconnect event")
+    }
+
     // MARK: Auto-reconnect variants (C1 review: link loss reports `.connecting`, never `.disconnected`)
 
     private var autoReconnectOptions: [String: Any] {

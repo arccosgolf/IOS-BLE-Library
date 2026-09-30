@@ -20,7 +20,7 @@ extension Publisher where Failure == Never {
 public enum FirstValueError: LocalizedError, Equatable {
 	/// The publisher finished without emitting a value, so there is no first value to return.
 	///
-	/// Reachable from ``CentralManager/connect(_:options:)`` when the peripheral is disconnected
+	/// Reachable from ``CentralManager/connect(_:options:keepPendingOnAbandon:)`` when the peripheral is disconnected
 	/// (with no error) before it connects, and from ``CentralManager/scanForPeripherals(withServices:options:)``
 	/// when ``CentralManager/stopScan()`` ends the scan before a match. Before Wave C2 an empty
 	/// completion left the awaiting task suspended forever.

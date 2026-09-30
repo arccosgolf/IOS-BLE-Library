@@ -67,6 +67,10 @@ public class CentralManager {
 	
     private let isScanningSubject = CurrentValueSubject<Bool, Never>(false)
 	private let killSwitchSubject = PassthroughSubject<Void, Never>()
+	/// Arccos (Wave C3): which scan publisher last issued the CoreBluetooth scan. A scan
+	/// publisher's cancel hook stops the radio only if no later scan has taken it over.
+	private let scanGenerationLock = NSLock()
+	private var scanGeneration = 0
 	private lazy var observer = Observer(cm: centralManager, publisher: isScanningSubject)
 
 	/// The underlying CBCentralManager instance.
@@ -136,31 +140,26 @@ extension CentralManager {
 	///     returned publisher's subscription ends before, or after, the peripheral connects.
 	///     See below. Arccos (Wave C3, CU-868m1mrjy): there is no default on purpose; every
 	///     call site states which contract it relies on.
-	/// - Returns: A publisher that emits the connected peripheral on successful connection.
-	///            The publisher does not finish until the peripheral is successfully connected.
-	///            If the peripheral was disconnected successfully, the publisher finishes without error.
-	///            If the connection was unsuccessful or disconnection returns an error (e.g., peripheral disconnected unexpectedly),
-	///            the publisher finishes with an error.
-    ///
-    /// Use ``CentralManager/connect(_:options:keepPendingOnAbandon:)`` to connect to a peripheral.
-    ///    The returned publisher will emit the connected peripheral or an error if the connection fails.
-    ///    The publisher will not complete until the peripheral is disconnected.
-    ///    If the connection fails, or the peripheral is unexpectedly disconnected, the publisher will fail with an error.
-    ///
-    ///    ```swift
-    ///    centralManager.connect(peripheral, keepPendingOnAbandon: true)
-    ///        .sink { completion in
-    ///            switch completion {
-    ///            case .finished:
-	///                print("Peripheral disconnected successfully")
-	///            case .failure(let error):
-	///                print("Error: \(error)")
-	///            }
-	///        } receiveValue: { peripheral in
-	///            print("Peripheral connected: \(peripheral)")
-	///        }
-	///        .store(in: &cancellables)
-	///    ```
+	/// - Returns: A publisher that emits the connected peripheral once, when the connection is
+	///   established, and then stays alive for the life of the connection. It finishes without
+	///   an error when the peripheral is disconnected without an error (a
+	///   ``cancelPeripheralConnection(_:)``), and fails when the connection attempt fails or the
+	///   peripheral disconnects with an error (for example, unexpectedly).
+	///
+	/// ```swift
+	/// centralManager.connect(peripheral, keepPendingOnAbandon: true)
+	///     .sink { completion in
+	///         switch completion {
+	///         case .finished:
+	///             print("Peripheral disconnected successfully")
+	///         case .failure(let error):
+	///             print("Error: \(error)")
+	///         }
+	///     } receiveValue: { peripheral in
+	///         print("Peripheral connected: \(peripheral)")
+	///     }
+	///     .store(in: &cancellables)
+	/// ```
 	///
 	/// ## The abandon policy
 	///
@@ -186,6 +185,19 @@ extension CentralManager {
 	///   auto-reconnect is the armed reconnect. Do not combine this policy with `firstValue`:
 	///   taking the value ends the subscription and disconnects the peripheral it just connected.
 	///
+	///   Two consequences of that withdrawal to plan for. First, when it withdraws a pending
+	///   request (a cancel while `.connecting`, or the armed reconnect after an error
+	///   disconnect), CoreBluetooth reports the withdrawal as a second, error-free disconnect on
+	///   ``disconnectedPeripheralsChannel`` (`isReconnecting: false`), delivered asynchronously;
+	///   a new `connect` for the same peripheral issued before that event arrives is finished by
+	///   it (the kill switch treats any error-free disconnect of the peripheral as the end of the
+	///   connection), so retry from that disconnect event rather than from the failure. A cancel
+	///   on a peripheral CoreBluetooth already holds nothing for (`.disconnected`, as after a
+	///   failed connect) is a no-op with no callback. Second, the request belongs to the
+	///   peripheral, not to the subscription: a `false` subscription that ends withdraws the
+	///   connection for every other subscriber and every abandoned `true` publisher of the same
+	///   peripheral. Do not mix policies on one peripheral.
+	///
 	/// Before Wave C3 the library never cancelled the request, i.e. every connect behaved as
 	/// `keepPendingOnAbandon: true` without saying so; the app's connect paths relied on that.
 	public func connect(
@@ -209,9 +221,13 @@ extension CentralManager {
 		// connection, so its end, by cancellation or by completion, withdraws whatever
 		// CoreBluetooth still holds. The two routes need two hooks: `autoconnect()` runs the
 		// connectable's cancel only when the last subscriber cancels (on completion it just
-		// releases the connection), and the completion hook never sees a cancellation. A cancel
-		// on a peripheral CoreBluetooth holds nothing for (already `.disconnected`) is a no-op
-		// that produces no callback, so running both for one subscription is harmless.
+		// releases the connection), and the completion hook never sees a cancellation. Only one
+		// of the two runs for a given subscription (cancelling a completed subscription is a
+		// Combine no-op). What the cancel does depends on the handle's state at that moment: on
+		// a `.disconnected` handle (failed connect, non-reconnecting disconnect) it is a no-op
+		// with no callback; on a `.connecting` handle (auto-reconnect armed after an error
+		// disconnect) it is real and CoreBluetooth reports it as a second, error-free
+		// disconnect. See the doc comment above.
 		let withdraw: (String) -> Void = { [centralManager] route in
 			Logger.shared.i("Connect subscription for \(peripheral.identifier.uuidString) \(route) (state \(peripheral.state.rawValue)); cancelling the CoreBluetooth connection (keepPendingOnAbandon: false)", category: "CentralManager")
 			centralManager.cancelPeripheralConnection(peripheral)
@@ -279,7 +295,7 @@ extension CentralManager {
 	///
 	/// The list of connected peripherals can include those that other apps
 	/// have connected. You need to connect these peripherals locally using
-	/// the `connect(_:options:)` method before using them.
+	/// the `connect(_:options:keepPendingOnAbandon:)` method before using them.
 	/// - Parameter serviceUUIDs: A list of service UUIDs, represented by
 	///                           `CBUUID` objects.
 	/// - Returns: A list of the peripherals that are currently connected
@@ -318,6 +334,7 @@ extension CentralManager {
 		-> AnyPublisher<ScanResult, Error>
 	{
 		stopScan()
+		let issued = IssuedScan()
 		return centralManagerDelegate.stateSubject
 			.tryFirst { state in
 				guard let determined = state.ready else { return false }
@@ -339,18 +356,40 @@ extension CentralManager {
 				return e
 			}
 			.bluetooth({
+				issued.generation = self.nextScanGeneration()
 				self.centralManager.scanForPeripherals(withServices: services, options: options)
-			}, onCancel: { [centralManager] in
+			}, onCancel: { [weak self] in
 				// Arccos (Wave C3): a scan nobody is subscribed to would run the radio until the
 				// next `stopScan()`. Runs when the last subscriber cancels (a cancelled sink or
 				// task, or `firstValue` taking its value); the completion routes (`stopScan()`,
 				// a state error) have already stopped the radio themselves. Stops CoreBluetooth
 				// directly rather than through `stopScan()`, whose kill switch would finish
-				// every other scan publisher too.
-				centralManager.stopScan()
+				// every other scan publisher too. CoreBluetooth runs one scan at a time, so a
+				// scan publisher subscribed after this one owns the radio: if that happened,
+				// this cancel leaves it alone.
+				guard let self, self.currentScanGeneration == issued.generation else { return }
+				self.centralManager.stopScan()
 			})
             .autoconnect()
             .eraseToAnyPublisher()
+	}
+
+	/// Arccos (Wave C3): shared between a scan publisher's fire and cancel closures.
+	private final class IssuedScan {
+		var generation = 0
+	}
+
+	private func nextScanGeneration() -> Int {
+		scanGenerationLock.lock()
+		defer { scanGenerationLock.unlock() }
+		scanGeneration += 1
+		return scanGeneration
+	}
+
+	private var currentScanGeneration: Int {
+		scanGenerationLock.lock()
+		defer { scanGenerationLock.unlock() }
+		return scanGeneration
 	}
 
 	/// Stops an ongoing scan for peripherals.

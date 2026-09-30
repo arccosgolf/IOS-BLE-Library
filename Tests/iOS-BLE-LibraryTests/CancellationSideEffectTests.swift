@@ -53,9 +53,8 @@ final class CancellationSideEffectTests: CentralManagerTestCase {
         try await waitForPowerOn(central)
 
         // The library's own async wrapper, spelled out: under `@testable import` its `values`
-        // extension makes the bare `.values` the app uses ambiguous, and Combine's wrapper
-        // needs iOS 15 while the package targets iOS 13. Both cancel the subscription when
-        // the task is cancelled, which is the behaviour under test.
+        // extension makes the bare `.values` the app uses ambiguous. Both wrappers cancel the
+        // subscription when the task is cancelled, which is the behaviour under test.
         let scanning = Task {
             for try await _ in iOS_BLE_Library_Mock.AsyncThrowingPublisher(central.scanForPeripherals(withServices: nil)) {}
         }
@@ -77,6 +76,31 @@ final class CancellationSideEffectTests: CentralManagerTestCase {
 
         XCTAssertEqual(result.peripheral.identifier, link.identifier)
         XCTAssertFalse(central.centralManager.isScanning, "`firstValue` ended the subscription, so the scan must be over")
+    }
+
+    func testCancellingAnOlderScanLeavesANewerScanRunning() async throws {
+        // Two scan publishers can be live at once when both are created before either is
+        // subscribed (`scanForPeripherals` only stops what is scanning at creation). The later
+        // subscriber owns the radio; cancelling the earlier one must not stop it.
+        let link = SimulatedPeripheral(name: "Link", services: [.primary(CBMUUID(string: "180D"))])
+        let central = try makeCentral(peripherals: [link])
+        try await waitForPowerOn(central)
+        let older = central.scanForPeripherals(withServices: nil)
+        let newer = central.scanForPeripherals(withServices: nil)
+
+        let olderSubscription = older.sink(receiveCompletion: { _ in }, receiveValue: { _ in })
+        let newerSawResults = EventBox<UUID>()
+        let newerSubscription = newer.sink(receiveCompletion: { _ in }, receiveValue: { newerSawResults.append($0.peripheral.identifier) })
+        try await waitUntil(2, "scan started") { central.centralManager.isScanning }
+
+        olderSubscription.cancel()
+
+        XCTAssertTrue(central.centralManager.isScanning, "the newer scan owns the radio")
+        let before = newerSawResults.count
+        try await waitUntil(2, "newer scan still delivering") { newerSawResults.count > before }
+
+        newerSubscription.cancel()
+        XCTAssertFalse(central.centralManager.isScanning, "the owner's cancel stops the radio")
     }
 
     func testStopScanStillFinishesTheScanPublisherWithoutRestartingIt() async throws {
