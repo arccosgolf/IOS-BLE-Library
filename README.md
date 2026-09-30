@@ -129,6 +129,23 @@ yet fixed. When the fix lands, remove the wrapper; XCTest fails a test that unex
 passes, so a stale marker cannot go unnoticed. Keep the assertions inside the closure:
 expected-failure matching is thread-scoped and does not survive an `await`.
 
+## Connecting: say what happens when you let go
+
+`CentralManager.connect(_:options:keepPendingOnAbandon:)` has no default for its last
+argument. CoreBluetooth's connect request never times out, and the publisher only observes
+it, so every call site states what the request does when the subscription ends:
+
+- `keepPendingOnAbandon: true`: the request (or the connection) outlives the publisher. Use
+  this when you await the connect (`firstValue`, a Combine `timeout`) and disconnect through
+  `cancelPeripheralConnection`. This is how the library always behaved, and how the app connects.
+- `keepPendingOnAbandon: false`: the subscription owns the connection; when it ends, by
+  cancellation or completion, the request is withdrawn. Never pair it with `firstValue`.
+
+`connectInventory` / `pendingConnects` list the connects CoreBluetooth currently holds for
+the app (issued here, or handed back by state restoration), read from the handles' own
+`state`. Every other publisher undoes its side effect when its subscription is cancelled: a
+scan stops the radio, a discovery request still queued behind another is withdrawn.
+
 ## Shipping a change to the app
 
 Feature flags cannot reach inside an SPM package, so the pin is the release unit:
