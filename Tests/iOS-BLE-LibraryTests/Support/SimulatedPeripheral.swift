@@ -48,6 +48,9 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     /// Called on the thread that issued `discoverDescriptors`, before the mock schedules its reply.
     var onDescriptorDiscoveryRequest: ((CBMPeripheralSpec, CBMCharacteristicMock) -> Void)?
 
+    /// Connect requests the mock has received for this peripheral (Wave C4: proves that an
+    /// unsubscribed connect publisher issued nothing).
+    private(set) var connectionRequests = 0
     private(set) var serviceDiscoveryRequests = 0
     private(set) var characteristicDiscoveryRequests = 0
     private(set) var descriptorDiscoveryRequests = 0
@@ -136,7 +139,8 @@ final class SimulatedPeripheral: CBMPeripheralSpecDelegate {
     // MARK: CBMPeripheralSpecDelegate
 
     func peripheralDidReceiveConnectionRequest(_ peripheral: CBMPeripheralSpec) -> Result<Void, Error> {
-        connectionResult
+        connectionRequests += 1
+        return connectionResult
     }
 
     func peripheral(

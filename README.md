@@ -146,6 +146,24 @@ the app (issued here, or handed back by state restoration), read from the handle
 `state`. Every other publisher undoes its side effect when its subscription is cancelled: a
 scan stops the radio, a discovery request still queued behind another is withdrawn.
 
+## Nothing happens until you subscribe
+
+Every publisher the library returns is cold: the CoreBluetooth request (`connect`,
+`cancelPeripheralConnection`, `scanForPeripherals`, every `Peripheral` operation) is issued
+when the first subscriber arrives, not when the method returns. `let _ =
+centralManager.connect(...)` compiles, logs nothing and issues nothing; that shape sat in the
+app's background-monitoring connect path for its entire life (A9, app PR #1824). Subscribe
+where you create the publisher (`sink`, `firstValue`, `values`) and hold the subscription for
+as long as you want to hear about the operation.
+
+Since Wave C4 a publisher released without ever being subscribed reports itself to
+`BluetoothPublisherDiagnostics.onDroppedUnsubscribed` with the operation it stood for and how
+long it was held. The default handler logs the report at fault level through `Logger.shared`
+and calls `assertionFailure`, so a debug build stops on the offending release and a release
+build only logs. Replace the handler at launch to route reports into your own logging or
+telemetry. A publisher that was subscribed is never reported, whether its subscription is
+still live, was cancelled, or completed.
+
 ## Shipping a change to the app
 
 Feature flags cannot reach inside an SPM package, so the pin is the release unit:
