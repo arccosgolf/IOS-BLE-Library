@@ -94,7 +94,7 @@ final class UnsubscribedPublisherGuardTests: CentralManagerTestCase {
 
         let report = try await waitForReport()
         XCTAssertEqual(report.operation, "connect(\(peripheral.identifier.uuidString), keepPendingOnAbandon: false)")
-        XCTAssertGreaterThanOrEqual(report.heldFor, 0.09)
+        XCTAssertGreaterThanOrEqual(report.heldFor, 0.05, "held across the 100 ms sleep")
         XCTAssertEqual(link.connectionRequests, 0)
     }
 
@@ -155,17 +155,93 @@ final class UnsubscribedPublisherGuardTests: CentralManagerTestCase {
         // issued at that moment, not before.
         let (link, central, peripheral) = try await makeCentralAndPeripheral()
 
-        let publisher = central.connect(peripheral, keepPendingOnAbandon: true)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(link.connectionRequests, 0, "cold until subscribed")
-        XCTAssertEqual(peripheral.state, .disconnected)
+        do {
+            let publisher = central.connect(peripheral, keepPendingOnAbandon: true)
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(link.connectionRequests, 0, "cold until subscribed")
+            XCTAssertEqual(peripheral.state, .disconnected)
 
-        let connected = try await withTimeout(2, "late subscription") { try await publisher.firstValue }
-
-        XCTAssertEqual(connected.identifier, peripheral.identifier)
-        XCTAssertEqual(link.connectionRequests, 1)
+            let connected = try await withTimeout(2, "late subscription") { try await publisher.firstValue }
+            XCTAssertEqual(connected.identifier, peripheral.identifier)
+            XCTAssertEqual(link.connectionRequests, 1)
+        }
+        // The publisher is released at the end of the block above; silence is asserted after.
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertTrue(reports.isEmpty)
+    }
+
+    func testASecondSubscriberSharesTheConnectInsteadOfIssuingAnother() async throws {
+        // The documented sharing contract: the first subscriber issues the connect, a second
+        // subscriber to the same publisher does not issue another.
+        let (link, central, peripheral) = try await makeCentralAndPeripheral()
+
+        let first = XCTestExpectation(description: "first subscriber connected")
+        let second = XCTestExpectation(description: "second subscriber connected")
+        do {
+            let publisher = central.connect(peripheral, keepPendingOnAbandon: true)
+            publisher.sink(receiveCompletion: { _ in }, receiveValue: { _ in first.fulfill() }).store(in: &cancellables)
+            publisher.sink(receiveCompletion: { _ in }, receiveValue: { _ in second.fulfill() }).store(in: &cancellables)
+        }
+        await fulfillment(of: [first, second], timeout: 2)
+
+        XCTAssertEqual(link.connectionRequests, 1, "one connect for two subscribers")
+        cancellables.removeAll()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(reports.isEmpty)
+    }
+
+    // MARK: Chains that build a step they never reach
+
+    /// Two links the harness can connect to; `a` refuses its connect.
+    private func makeRefusingAndSpareLinks() -> (SimulatedPeripheral, SimulatedPeripheral) {
+        let a = makeLink()
+        a.connectionResult = .failure(CBMError(.connectionFailed))
+        return (a, makeLink())
+    }
+
+    func testAStepNeverReachedByAnAppendChainIsReported() async throws {
+        // `connectA.append(connectB)` builds B right away; when A fails, B is released without
+        // ever being subscribed. That is a real report (nothing was issued for B).
+        let (a, b) = makeRefusingAndSpareLinks()
+        let central = try makeCentral(peripherals: [a, b])
+        let pa = try await discover(a, on: central)
+        let pb = try await discover(b, on: central)
+        try await waitForPowerOn(central)
+
+        let failed = XCTestExpectation(description: "chain failed on A")
+        central.connect(pa, keepPendingOnAbandon: true)
+            .append(central.connect(pb, keepPendingOnAbandon: true))
+            .sink(receiveCompletion: { if case .failure = $0 { failed.fulfill() } }, receiveValue: { _ in })
+            .store(in: &cancellables)
+        await fulfillment(of: [failed], timeout: 2)
+        cancellables.removeAll()
+
+        let report = try await waitForReport()
+        XCTAssertEqual(report.operation, "connect(\(pb.identifier.uuidString), keepPendingOnAbandon: true)")
+        XCTAssertEqual(a.connectionRequests, 1)
+        XCTAssertEqual(b.connectionRequests, 0, "B was never subscribed, so never issued")
+    }
+
+    func testDeferredBuildsTheLaterStepOnlyWhenItIsReached() async throws {
+        // The documented remedy: wrap the later step in `Deferred` so nothing exists for B
+        // until the chain reaches it. A fails, B is never built, nothing is reported.
+        let (a, b) = makeRefusingAndSpareLinks()
+        let central = try makeCentral(peripherals: [a, b])
+        let pa = try await discover(a, on: central)
+        let pb = try await discover(b, on: central)
+        try await waitForPowerOn(central)
+
+        let failed = XCTestExpectation(description: "chain failed on A")
+        central.connect(pa, keepPendingOnAbandon: true)
+            .append(Deferred { central.connect(pb, keepPendingOnAbandon: true) })
+            .sink(receiveCompletion: { if case .failure = $0 { failed.fulfill() } }, receiveValue: { _ in })
+            .store(in: &cancellables)
+        await fulfillment(of: [failed], timeout: 2)
+        cancellables.removeAll()
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(reports.isEmpty, "a step that was never built cannot be dropped")
+        XCTAssertEqual(b.connectionRequests, 0)
     }
 
     // MARK: The same guard covers every other Bluetooth publisher
@@ -203,23 +279,65 @@ final class UnsubscribedPublisherGuardTests: CentralManagerTestCase {
         _ = peripheral.discoverServices(serviceUUIDs: nil)
 
         let report = try await waitForReport()
-        XCTAssertEqual(report.operation, "discoverServices(serviceUUIDs:)")
+        XCTAssertEqual(report.operation, "discoverServices(serviceUUIDs:) on \(cbPeripheral.identifier.uuidString)")
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(link.serviceDiscoveryRequests, 0, "nothing was queued, nothing was sent")
         XCTAssertTrue(peripheral.peripheralDelegate.serviceDiscovery.isEmpty)
+    }
+
+    func testDroppingAReadRSSIPublisherUnsubscribedIsReportedWithThePeripheral() async throws {
+        // A second Peripheral operation, to pin the `#function on <peripheral>` label shape.
+        let (_, central, cbPeripheral) = try await makeCentralAndPeripheral()
+        try await connect(cbPeripheral, on: central)
+        let peripheral = Peripheral(peripheral: cbPeripheral)
+
+        _ = peripheral.readRSSI()
+
+        let report = try await waitForReport()
+        XCTAssertEqual(report.operation, "readRSSI() on \(cbPeripheral.identifier.uuidString)")
+    }
+
+    // MARK: The mechanism itself, with deallocation proven
+
+    func testASubscribedPublisherDeallocatesSilentlyOnceItsSubscriptionIsGone() {
+        weak var probe: Publishers.BluetoothPublisher<Int, Never>?
+        let fired = EventBox<Void>()
+        do {
+            let publisher = PassthroughSubject<Int, Never>().bluetooth({ fired.append(()) }, operation: "probe")
+            probe = publisher
+            let subscription = publisher.autoconnect().sink { _ in }
+            XCTAssertEqual(fired.count, 1, "autoconnect fires on the first subscriber")
+            subscription.cancel()
+        }
+        XCTAssertNil(probe, "nothing retains the publisher once its subscription is gone")
+        XCTAssertTrue(reports.isEmpty, "it fired, so it is silent")
+    }
+
+    func testAnUnsubscribedPublisherDeallocatesAndReportsExactlyOnce() {
+        weak var probe: Publishers.BluetoothPublisher<Int, Never>?
+        do {
+            let publisher = PassthroughSubject<Int, Never>().bluetooth({ XCTFail("must not fire") }, operation: "probe")
+            probe = publisher
+            _ = publisher.autoconnect().eraseToAnyPublisher()  // the public API's shape, never subscribed
+        }
+        XCTAssertNil(probe)
+        XCTAssertEqual(reports.values.map(\.operation), ["probe"])
     }
 
     // MARK: The report
 
     func testTheReportNamesTheOperationAndWhatToDo() {
         let quick = Report(operation: "connect(X, keepPendingOnAbandon: true)", heldFor: 0.0000421)
+        XCTAssertTrue(quick.description.hasPrefix("dropped-unsubscribed: "), "fixed token first, for log filters: \(quick.description)")
         XCTAssertTrue(quick.description.contains("connect(X, keepPendingOnAbandon: true)"), quick.description)
         XCTAssertTrue(quick.description.contains("never issued"), quick.description)
         XCTAssertTrue(quick.description.contains("held 42 µs"), quick.description)
         XCTAssertTrue(quick.description.contains("Subscribe where you create it"), quick.description)
 
-        let stored = Report(operation: "readRSSI()", heldFor: 12.3456)
-        XCTAssertTrue(stored.description.contains("held 12345.6 ms"), stored.description)
+        XCTAssertTrue(Report(operation: "readRSSI()", heldFor: 0.0123).description.contains("held 12.3 ms"))
+        XCTAssertTrue(Report(operation: "readRSSI()", heldFor: 12.3456).description.contains("held 12.3 s"))
+        XCTAssertEqual(quick, Report(operation: "connect(X, keepPendingOnAbandon: true)", heldFor: 0.0000421),
+                       "Equatable, so an app can assert on the report its handler received")
     }
 
     func testTheHandlerCanBeReplacedAndRestored() {

@@ -148,21 +148,28 @@ scan stops the radio, a discovery request still queued behind another is withdra
 
 ## Nothing happens until you subscribe
 
-Every publisher the library returns is cold: the CoreBluetooth request (`connect`,
-`cancelPeripheralConnection`, `scanForPeripherals`, every `Peripheral` operation) is issued
-when the first subscriber arrives, not when the method returns. `let _ =
-centralManager.connect(...)` compiles, logs nothing and issues nothing; that shape sat in the
-app's background-monitoring connect path for its entire life (A9, app PR #1824). Subscribe
-where you create the publisher (`sink`, `firstValue`, `values`) and hold the subscription for
-as long as you want to hear about the operation.
+The request publishers are cold: `connect`, `cancelPeripheralConnection`,
+`scanForPeripherals`, the three `discover*` methods, `writeValueWithResponse`,
+`setNotifyValue`, `readRSSI` and `isReadyToSendWriteWithoutResponse` issue their CoreBluetooth
+request when the first subscriber arrives, not when the method returns. (`readValue(for:)` and
+the descriptor `writeValue` return a `Future`, which is eager; `writeValueWithoutResponse` is a
+plain call; `listenValues` issues no request.) `let _ = centralManager.connect(...)` compiles,
+logs nothing and issues nothing; that shape sat in the app's background-monitoring connect path
+for its entire life (A9, app PR #1824). Subscribe where you create the publisher (`sink`,
+`firstValue`, `values`) and hold the subscription for as long as you want to hear about the
+operation. If a chain may never reach a publisher, for example the suffix of an `append`, build
+it inside `Deferred { }` so it only exists once it is reached.
 
-Since Wave C4 a publisher released without ever being subscribed reports itself to
-`BluetoothPublisherDiagnostics.onDroppedUnsubscribed` with the operation it stood for and how
-long it was held. The default handler logs the report at fault level through `Logger.shared`
-and calls `assertionFailure`, so a debug build stops on the offending release and a release
-build only logs. Replace the handler at launch to route reports into your own logging or
-telemetry. A publisher that was subscribed is never reported, whether its subscription is
-still live, was cancelled, or completed.
+Since Wave C4 a cold publisher released without ever being subscribed reports itself to
+`BluetoothPublisherDiagnostics.onDroppedUnsubscribed` with the operation it stood for (device,
+and policy for `connect`) and how long it was held; the log line starts with
+`dropped-unsubscribed:`. The default handler logs the report at fault level through
+`Logger.shared` and calls `assertionFailure`, so a debug build (including a test target that
+links the package) stops on the offending release, and a release build only logs, and only once
+the app has called `Logger.shared.configure(with:)`. Replace the handler at launch to route
+reports into your own telemetry; call `BluetoothPublisherDiagnostics.defaultHandler` from your
+handler to keep the debug trap. A publisher that was subscribed is never reported, whether its
+subscription is still live, was cancelled, or completed.
 
 ## Shipping a change to the app
 

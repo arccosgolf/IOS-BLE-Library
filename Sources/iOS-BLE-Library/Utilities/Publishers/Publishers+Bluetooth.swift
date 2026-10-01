@@ -23,8 +23,9 @@ extension Publisher {
 	///     (see ``CentralManager/connect(_:options:keepPendingOnAbandon:)``).
 	///   - operation: Arccos (Wave C4): names the operation in a
 	///     ``BluetoothPublisherDiagnostics/DroppedUnsubscribed`` report, should the publisher be
-	///     released without ever being connected. Defaults to the calling function; pass a
-	///     string when the peripheral or the policy matters to whoever reads the report.
+	///     released without ever being connected. Defaults to the calling function (evaluated
+	///     at the call site); pass a string that also names the peripheral, and the policy
+	///     where there is one, so the report says which device.
 	func bluetooth(
 		_ fire: @escaping () -> Void, onCancel: (() -> Void)? = nil, operation: String = #function
 	) -> Publishers.BluetoothPublisher<Output, Failure> {
@@ -63,14 +64,18 @@ extension Publishers {
 
 		private let inner: BaseConnectable<Output, Failure>
 		private let operation: String
-		private let createdAt = Date()
+		/// Monotonic, so `heldFor` survives a wall-clock step.
+		private let createdAt = DispatchTime.now()
 		/// Set by ``connect()``; read only in `deinit`, which runs once the last reference is
 		/// gone and therefore after any `connect()` call. No lock needed.
 		private var wasConnected = false
 
+		/// - Parameter operation: names the publisher in a
+		///   ``BluetoothPublisherDiagnostics/DroppedUnsubscribed`` report. Required here on
+		///   purpose: a `#function` default on this initializer would name the initializer.
 		init<PublisherType: Publisher>(
 			_ publisher: PublisherType, fire: @escaping () -> Void, onCancel: (() -> Void)? = nil,
-			operation: String = #function
+			operation: String
 		) where Output == PublisherType.Output, Failure == PublisherType.Failure {
 			self.inner = ClosureConnectablePublisher(upstream: publisher, fire: fire, onCancel: onCancel)
 			self.operation = operation
@@ -78,8 +83,9 @@ extension Publishers {
 
 		deinit {
 			guard !wasConnected else { return }
+			let held = DispatchTime.now().uptimeNanoseconds - createdAt.uptimeNanoseconds
 			BluetoothPublisherDiagnostics.report(
-				.init(operation: operation, heldFor: Date().timeIntervalSince(createdAt)))
+				.init(operation: operation, heldFor: TimeInterval(held) / 1_000_000_000))
 		}
 
 		public func receive<S>(subscriber: S)
