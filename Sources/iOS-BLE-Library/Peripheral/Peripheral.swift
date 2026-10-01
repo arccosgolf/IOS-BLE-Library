@@ -193,6 +193,13 @@ public class Peripheral {
 		lanes.enqueue(operation)
 	}
 
+	/// Arccos (Wave C4): the label a request publisher reports under if it is released without
+	/// ever being subscribed (``BluetoothPublisherDiagnostics``). `function` defaults to the
+	/// calling method's name.
+	private func operationLabel(_ function: String = #function) -> String {
+		"\(function) on \(peripheral.identifier.uuidString)"
+	}
+
 	/// Arccos (Wave C3): a discovery publisher's subscription was cancelled. If its request is
 	/// still queued behind another one in its lane it is withdrawn, so a request nobody is
 	/// waiting for is never issued to CoreBluetooth. A request already in flight cannot be
@@ -288,7 +295,7 @@ extension Peripheral {
                 self.enqueueIfConnected(operation, on: self.peripheralDelegate.serviceDiscovery)
             }, onCancel: {
                 self.withdrawIfQueued(operationID, from: self.peripheralDelegate.serviceDiscovery, "discoverServices")
-            })
+            }, operation: operationLabel())
             .autoconnect()
             .eraseToAnyPublisher()
     }
@@ -347,7 +354,7 @@ extension Peripheral {
             self.enqueueIfConnected(operation, on: self.peripheralDelegate.characteristicDiscovery)
         }, onCancel: {
             self.withdrawIfQueued(id, from: self.peripheralDelegate.characteristicDiscovery, "discoverCharacteristics")
-        })
+        }, operation: operationLabel())
         .autoconnect()
         .eraseToAnyPublisher()
 	}
@@ -388,7 +395,7 @@ extension Peripheral {
                 self.enqueueIfConnected(operation, on: self.peripheralDelegate.descriptorDiscovery)
             }, onCancel: {
                 self.withdrawIfQueued(id, from: self.peripheralDelegate.descriptorDiscovery, "discoverDescriptors")
-            })
+            }, operation: operationLabel())
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -473,10 +480,10 @@ extension Peripheral {
 					return ()
 				}
 			}
-			.bluetooth {
+			.bluetooth({
 				self.peripheral.writeValue(
 					data, for: characteristic, type: .withResponse)
-			}
+			}, operation: operationLabel())
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -506,7 +513,7 @@ extension Peripheral {
      */
     public func isReadyToSendWriteWithoutResponse() -> AnyPublisher<Void, Never> {
         isReadyToSendWriteWithoutResponseChannel
-            .bluetooth { [unowned self] in
+            .bluetooth({ [unowned self] in
                 guard self.peripheral.canSendWriteWithoutResponse else {
                     // isReadyToSendWriteWithoutResponseSubject will fire on
                     // peripheralIsReady() callback
@@ -514,7 +521,7 @@ extension Peripheral {
                 }
                 // Signal to continue.
                 self.peripheralDelegate.isReadyToSendWriteWithoutResponseSubject.send(Void())
-            }
+            }, operation: operationLabel())
             // TODO: 15ms (Bluetooth LE Radio connection interval) timeout like McuMgrLibrary transport uses.
             .autoconnect()
             .eraseToAnyPublisher()
@@ -555,9 +562,9 @@ extension Peripheral {
                 }
                 return result.0.isNotifying
             }
-            .bluetooth {
+            .bluetooth({
                 self.peripheral.setNotifyValue(isEnabled, for: characteristic)
-            }
+            }, operation: operationLabel())
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -578,9 +585,9 @@ extension Peripheral {
                 }
             }
             .first()
-            .bluetooth {
+            .bluetooth({
                 self.peripheral.readRSSI()
-            }
+            }, operation: operationLabel())
             .autoconnect()
             .eraseToAnyPublisher()
     }

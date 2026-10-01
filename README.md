@@ -146,6 +146,31 @@ the app (issued here, or handed back by state restoration), read from the handle
 `state`. Every other publisher undoes its side effect when its subscription is cancelled: a
 scan stops the radio, a discovery request still queued behind another is withdrawn.
 
+## Nothing happens until you subscribe
+
+The request publishers are cold: `connect`, `cancelPeripheralConnection`,
+`scanForPeripherals`, the three `discover*` methods, `writeValueWithResponse`,
+`setNotifyValue`, `readRSSI` and `isReadyToSendWriteWithoutResponse` issue their CoreBluetooth
+request when the first subscriber arrives, not when the method returns. (`readValue(for:)` and
+the descriptor `writeValue` return a `Future`, which is eager; `writeValueWithoutResponse` is a
+plain call; `listenValues` issues no request.) `let _ = centralManager.connect(...)` compiles,
+logs nothing and issues nothing; that shape sat in the app's background-monitoring connect path
+for its entire life (A9, app PR #1824). Subscribe where you create the publisher (`sink`,
+`firstValue`, `values`) and hold the subscription for as long as you want to hear about the
+operation. If a chain may never reach a publisher, for example the suffix of an `append`, build
+it inside `Deferred { }` so it only exists once it is reached.
+
+Since Wave C4 a cold publisher released without ever being subscribed reports itself to
+`BluetoothPublisherDiagnostics.onDroppedUnsubscribed` with the operation it stood for (device,
+and policy for `connect`) and how long it was held; the log line starts with
+`dropped-unsubscribed:`. The default handler logs the report at fault level through
+`Logger.shared` and calls `assertionFailure`, so a debug build (including a test target that
+links the package) stops on the offending release, and a release build only logs, and only once
+the app has called `Logger.shared.configure(with:)`. Replace the handler at launch to route
+reports into your own telemetry; call `BluetoothPublisherDiagnostics.defaultHandler` from your
+handler to keep the debug trap. A publisher that was subscribed is never reported, whether its
+subscription is still live, was cancelled, or completed.
+
 ## Shipping a change to the app
 
 Feature flags cannot reach inside an SPM package, so the pin is the release unit:

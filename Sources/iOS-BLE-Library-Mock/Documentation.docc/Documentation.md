@@ -17,3 +17,4 @@ So if you are familiar with the CoreBluetooth framework, you will be able to use
 
 ### Essentials
 - ``iOS_BLE_Library/Combine/Publishers/BluetoothPublisher``
+- ``BluetoothPublisherDiagnostics``

@@ -161,6 +161,22 @@ extension CentralManager {
 	///     .store(in: &cancellables)
 	/// ```
 	///
+	/// ## Nothing is issued until you subscribe
+	///
+	/// The returned publisher is cold: `CBCentralManager.connect` runs when the **first
+	/// subscriber** arrives (`sink`, `firstValue`, `values`, or any operator that subscribes),
+	/// not when this method returns. Creating the publisher and letting it go, as in
+	/// `let _ = centralManager.connect(...)`, or storing it for later and never subscribing,
+	/// issues nothing and raises no error. Arccos (Wave C4, CU-868m1mrny): a connect publisher
+	/// released without ever being subscribed is reported to
+	/// ``BluetoothPublisherDiagnostics/onDroppedUnsubscribed``; the default handler logs at
+	/// fault level and stops a debug build. Subscribe where you create the publisher, and hold
+	/// the subscription (or await the value) for as long as you want to hear about the
+	/// connection. The connect is issued once, by the first subscriber; a later subscriber to
+	/// the same publisher does not issue another and only observes events from the point it
+	/// subscribed (it does not get a connect that already happened). If a chain may never reach
+	/// this publisher (for example the suffix of an `append`), build it inside `Deferred { }`.
+	///
 	/// ## The abandon policy
 	///
 	/// CoreBluetooth's connect request never times out: once issued it stays pending until the
@@ -254,14 +270,24 @@ extension CentralManager {
 					origin: .connect(keepPendingOnAbandon: keepPendingOnAbandon))
 				self.centralManager.connect(peripheral, options: options)
 				Logger.shared.i("Issued connect for \(peripheral.identifier.uuidString) (keepPendingOnAbandon: \(keepPendingOnAbandon)); CoreBluetooth now holds \(self.connectInventory.count) connect(s) for this app", category: "CentralManager")
-			}, onCancel: onCancel)
+			}, onCancel: onCancel,
+			operation: "connect(\(peripheral.identifier.uuidString), keepPendingOnAbandon: \(keepPendingOnAbandon))")
             .autoconnect()
             .eraseToAnyPublisher()
 	}
 
 	/// Cancels the connection with the specified peripheral.
+	///
+	/// Like the other request publishers in this library the result is cold:
+	/// `cancelPeripheralConnection` is sent to CoreBluetooth when the first subscriber arrives,
+	/// not when this method returns, so
+	/// `let _ = centralManager.cancelPeripheralConnection(p)` disconnects nothing. Subscribe
+	/// (`sink`, `firstValue`) to issue it; a publisher released unsubscribed is reported to
+	/// ``BluetoothPublisherDiagnostics/onDroppedUnsubscribed`` (Arccos, Wave C4).
+	///
 	/// - Parameter peripheral: The peripheral to disconnect from.
-	/// - Returns: A publisher that emits the disconnected peripheral.
+	/// - Returns: A publisher that emits the disconnected peripheral once the disconnect is
+	///   reported, or fails with the disconnect's error.
 	public func cancelPeripheralConnection(_ peripheral: CBPeripheral) -> AnyPublisher<CBPeripheral, Error>
 	{
 		return self.disconnectedPeripheralsChannel
@@ -278,9 +304,9 @@ extension CentralManager {
 			}
 			.map { $0.0 }
 			.first()
-            .bluetooth {
+            .bluetooth({
                 self.centralManager.cancelPeripheralConnection(peripheral)
-            }
+            }, operation: "cancelPeripheralConnection(\(peripheral.identifier.uuidString))")
             .autoconnect()
             .eraseToAnyPublisher()
 	}
@@ -325,6 +351,13 @@ extension CentralManager {
 	/// Initiates a scan for peripherals with the specified services.
 	/// 
 	/// Calling this method stops an ongoing scan if it is already running and finishes the publisher returned by ``scanForPeripherals(withServices:)``.
+	///
+	/// The new scan itself starts when the first subscriber arrives, not when this method
+	/// returns: the publisher is cold, like the other request publishers in this library. The
+	/// stop of the previous scan, by contrast, happens at creation (that asymmetry predates the
+	/// fork), so a scan publisher released without ever being subscribed has still stopped the
+	/// previous scan while starting none of its own; it is reported to
+	/// ``BluetoothPublisherDiagnostics/onDroppedUnsubscribed`` (Arccos, Wave C4).
 	/// 
 	/// - Parameters:
 	///   - services: The services to scan for.
@@ -369,7 +402,7 @@ extension CentralManager {
 				// this cancel leaves it alone.
 				guard let self, self.currentScanGeneration == issued.generation else { return }
 				self.centralManager.stopScan()
-			})
+			}, operation: "scanForPeripherals(withServices: \(services.map { $0.map(\.uuidString) } ?? ["all"]))")
             .autoconnect()
             .eraseToAnyPublisher()
 	}

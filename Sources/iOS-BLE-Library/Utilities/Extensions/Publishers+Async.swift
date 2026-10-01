@@ -38,7 +38,9 @@ extension Publisher {
 	/// The publisher's first value, bridged into async/await.
 	///
 	/// Subscribes on first access, returns the first emitted value and cancels the
-	/// subscription. Throws the publisher's failure, or ``FirstValueError/finishedWithoutValue``
+	/// subscription. The cancel runs before this returns, so whatever the publisher undoes on
+	/// cancel (a scan stops, a queued discovery is withdrawn) has happened by then.
+	/// Throws the publisher's failure, or ``FirstValueError/finishedWithoutValue``
 	/// if the publisher finishes without emitting. A publisher that never completes keeps this
 	/// suspended, so bound it with Combine's `timeout(_:scheduler:options:customError:)` and pass
 	/// `customError`: without one, `timeout` finishes the publisher and this throws

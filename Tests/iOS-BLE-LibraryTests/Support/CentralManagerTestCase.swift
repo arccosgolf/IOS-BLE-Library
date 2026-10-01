@@ -165,8 +165,8 @@ class CentralManagerTestCase: XCTestCase {
 }
 
 /// A lock-guarded append-only list for values captured inside a `sink` and read from the
-/// test's own task.
-final class EventBox<Element> {
+/// test's own task. Every access takes the lock, hence the unchecked conformance.
+final class EventBox<Element>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [Element] = []
 
