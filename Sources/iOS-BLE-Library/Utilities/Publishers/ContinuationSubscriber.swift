@@ -56,9 +56,14 @@ class ContinuationSubscriber<Upstream: Publisher>: Subscriber {
 			return .none
 		}
 		self.state = .terminated
-		continuation.resume(returning: input)
-
+		// Arccos (Wave C4): cancel BEFORE resuming. `resume` hands the awaiting task to the
+		// executor, which may run it on another core at once; cancelling afterwards let that
+		// task observe the request's side effect still in place (a scan still running after
+		// `scanForPeripherals(...).firstValue` returned, seen on the 2-core CI runner). With the
+		// cancel first, every cancel-side effect (`onCancel`: scan stopped, queued discovery
+		// withdrawn) has run by the time `firstValue` returns.
 		self.subscription?.cancel()
+		continuation.resume(returning: input)
 		lock.unlock()
 
 		return .none
